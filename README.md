@@ -12,7 +12,7 @@ NestJS (TypeScript) modular monolith for Kal. Phase 1 modules (planned): identit
 
 ## Setup
 
-Recommended: clone inside the Kal docs repo so docs and code sit together (that is the layout agents expect):
+Recommended: clone inside the Kal docs repo so docs and code sit together (that is the layout agents expect — and AI agents **require** it: they look for the Kal docs at `../../` and must refuse business/architecture work without them, see `CLAUDE.md`):
 
 ```bash
 cd Kal/repositories          # create the folder if it is your first clone
