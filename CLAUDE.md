@@ -15,7 +15,8 @@ Kal/                      ← documentation repo (the single source of truth)
 **Before any task that touches business rules, architecture, the data model or schema, API contracts, tenancy/isolation, identity, offline/sync ingestion, phase scope, or anything an HD-xx decision covers**, verify the docs exist and read the relevant sections:
 
 1. Check that `../../PRD.md` and `../../ARCHITECTURE.md` exist. If they do, read the sections governing the task (plus `../../CLAUDE.md`, `../../docs/development/PLAN.md`, and `../../docs/decisions/` where relevant). When documents disagree with each other or with a request, STOP and ask the founder — never pick an interpretation.
-2. If they are not at `../../`, check parent directories for a folder containing both `PRD.md` and `ARCHITECTURE.md` (non-standard but valid layouts).
+2. **Freshness check:** if `../../` is a git repository, run `git -C ../../ fetch origin --quiet`, then `git -C ../../ rev-list --count main..origin/main`. If the count is non-zero, the local Kal docs are behind the remote: warn the user and ask whether to pull first — never build against a known-stale copy silently.
+3. If they are not at `../../`, check parent directories for a folder containing both `PRD.md` and `ARCHITECTURE.md` (non-standard but valid layouts).
 
 ## If the docs cannot be found — STOP
 
