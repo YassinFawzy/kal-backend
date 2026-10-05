@@ -8,7 +8,7 @@ NestJS (TypeScript) modular monolith for Kal. Phase 1 modules (planned): identit
 
 - Node.js 20+ (developed on 24.x)
 - pnpm 9+ (`npm install -g pnpm`)
-- PostgreSQL 15+ — **not needed yet** (see below)
+- PostgreSQL 15+ — local dev database (see **Local database** below)
 
 ## Setup
 
@@ -31,15 +31,26 @@ pnpm start        # compiled production mode
 ## Checks
 
 ```bash
-pnpm lint         # eslint
+pnpm lint         # oxlint (type-aware)
 pnpm build        # nest build (also the typecheck gate for now)
 pnpm test         # unit tests (vitest via the Nest template)
 pnpm test:e2e     # e2e — start `pnpm start:dev` in another terminal first
 ```
 
+## Local database
+
+Prisma is scaffolded (config in `prisma7.config.ts`, schema at `prisma/schema.prisma` — empty by design). The **local dev database is `kal`**: an intentionally EMPTY database on the machine's local PostgreSQL (localhost:5432). Wave 1 of the delivery plan creates the schema through reviewed Prisma migrations; until then nothing creates tables.
+
+```bash
+cp .env.example .env          # then set your local credentials
+createdb kal                  # once, if it does not exist yet
+```
+
+All agents and sessions target this database via `DATABASE_URL` in `.env` (never committed). Ephemeral test databases for the A/B/C security harness are created/dropped by the test harness itself (Wave 1 defines the pattern).
+
 ## Not wired yet (state at bootstrap)
 
-Prisma, PostgreSQL, environment/config validation, and all feature modules — this is the freshly scaffolded NestJS template. The foundation increment lands next (see the Kal docs repo).
+PostgreSQL connection config (`.env`), environment/config validation, and all feature modules. Prisma is scaffolded only — no schema, no migrations yet. The foundation increment lands next (see the Kal docs repo).
 
 ## Repository rules (from ARCHITECTURE.md — full version there)
 
