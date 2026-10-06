@@ -51,6 +51,7 @@ pnpm lint         # oxlint (type-aware)
 pnpm build        # nest build (also the typecheck gate for now)
 pnpm test         # unit tests (vitest; specs colocated in src/)
 pnpm test:e2e     # e2e (vitest) — boots the real AppModule in-process; NO running server or database required
+pnpm test:integration  # A/B/C isolation harness (s4) — real PostgreSQL; see "A/B/C isolation harness" below
 ```
 
 ## Local database
@@ -132,6 +133,24 @@ Wave 1 establishes the structural-isolation pattern every later wave copies:
   (The W1 tables stand alone — no consumer table exists yet, so `weight_log.owner_id` deliberately has no FK; the identity wave documents whether pilot tables adopt the composite pattern retroactively.)
 - **Never assert RLS behavior over a superuser connection** — superusers bypass RLS unconditionally. Verification connections use `SET ROLE kal_app` / `SET ROLE kal_platform` and assert on `current_user` (proof pattern in the Wave 1 merge request evidence).
 - Introspection: `psql "$DATABASE_URL" -c '\dp weight_log' -c "SELECT * FROM pg_policies;"`.
+
+## A/B/C isolation harness (s4 — the pattern every wave reuses)
+
+The canonical command (requires the local PostgreSQL from "Local database" and a `DATABASE_URL` whose user is the admin/migration user):
+
+```bash
+pnpm test:integration
+```
+
+What the harness guarantees (ARCHITECTURE.md §11/§22, ADR-0002):
+
+- **Ephemeral per-suite databases.** Each suite creates `kal_it_<label>_<rand>`, applies the full migration history with the real `prisma migrate deploy` runner, and drops it (`WITH (FORCE)`) afterwards. The dev `kal` database is never touched; suites share nothing.
+- **Never assert row security as a superuser.** Superusers bypass RLS unconditionally. Every behavioral statement runs through `test/integration/helpers/acting-owner.ts`: `SET LOCAL ROLE kal_app`/`kal_platform` inside a transaction, then a `current_user` proof — the helper refuses to run otherwise. The owner context is the transaction-local GUC (`set_config('app.current_owner', <uuid>, true)`).
+- **A/B/C semantics.** A owns target rows; B attacks every read/mutate/reference/enumerate path with valid credentials; C is the control (parity proves denials are authorization-driven). Rows are seeded through the app role under each owner's context — never via admin authority.
+- **Denials are row-count assertions.** RLS hides rows; exceptions are asserted only where PostgreSQL actually raises (INSERT `WITH CHECK`, missing column grants, malformed GUC casts, privilege-escalation attempts).
+- **No secrets in logs.** The migration-runner spawn is the one boundary that could echo credentials; its output is redacted against the URL and password before surfacing.
+
+Reuse for later waves: copy `rls-pilot.itspec.ts` as the reference consumer and `test/integration/helpers/*` as-is; owned child tables add the compound-ownership cases (README "Roles & row-level security").
 
 ## Not wired yet (state at bootstrap)
 
