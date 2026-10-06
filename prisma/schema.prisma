@@ -1,13 +1,131 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
+// Kal — Prisma schema (foundation, Wave 1).
+//
+// Authority: Kal docs repo (../../) — PRD.md §21 (logical data model),
+// ARCHITECTURE.md §4 (invariants I1–I15), §9 (module map), §11 (data & tenancy),
+// ADR-0002 (narrow fail-closed RLS). This file carries ONLY the Wave-1
+// foundation tables; domain tables land with their own waves as reviewed
+// migrations (never via `prisma db push` — production auto-sync is forbidden).
+//
+// Conventions used here:
+//   - Client fields are camelCase; every column is @map'ped to snake_case.
+//   - Primary keys are server-generated UUIDs (gen_random_uuid(), PostgreSQL 13+).
+//   - Timestamps are timestamptz (UTC instants; local-day boundaries are
+//     computed in domain logic, Africa/Cairo default — ARCHITECTURE §16).
+//   - Owner columns are immutable UUIDs (see README "Roles & row-level security").
+//   - Roles, GRANTs, and RLS policies ship as raw SQL inside migrations,
+//     never as ad hoc scripts (ADR-0002 §4).
 
 generator client {
   provider = "prisma-client"
   output   = "../generated/prisma"
+  // ESM imports with explicit .ts extensions so the seed scaffold (and any
+  // script) can run under Node's built-in TypeScript type stripping — no
+  // extra tooling needed. Application code imports are unaffected.
+  importFileExtension = "ts"
 }
 
 datasource db {
   provider = "postgresql"
 }
+
+// ---------------------------------------------------------------------------
+// Foundation (Wave 1 — this lane)
+// ---------------------------------------------------------------------------
+
+/// Platform-owned, append-only audit log of privileged actions
+/// (ARCHITECTURE §15, I14: actor, action, target, timestamp, justification).
+/// Not a consumer-health table — deliberately outside RLS scope (ADR-0002 §1).
+/// Append-only is enforced structurally in the roles/RLS migration:
+/// no UPDATE/DELETE grants for any role, plus a BEFORE UPDATE/DELETE trigger.
+model AuditEvent {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Privileged-plane actor identifier (admin actor; W1 has no admin tables
+  /// yet, so this is an opaque identifier string, not a foreign key).
+  actor String
+
+  /// Stable, registered action code (e.g. a moderation or lifecycle action).
+  action String
+
+  /// Target reference as an opaque internal identifier (never user-facing PII).
+  target String
+
+  /// Why the privileged action was taken — mandatory (I14 / §15).
+  justification String
+
+  /// When the action happened (server clock, UTC). Set once at INSERT;
+  /// rows are never updated (append-only, I14).
+  occurredAt DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  @@map("audit_events")
+}
+
+/// RLS pilot — consumer-owned health table (ADR-0002 §2.1 "weight logs").
+/// Minimal Wave-1 shape per the s1 task contract; Wave 5 (goals) extends this
+/// table FORWARD-ONLY (additional columns via new migrations; the columns
+/// shipped here are never rewritten or repurposed).
+///
+/// Isolation (the point of the pilot):
+///   - owner_id is immutable (column-level UPDATE grant excludes it) and
+///     NOT NULL; there is no consumer table yet (identity lands in W2), so
+///     there is deliberately no foreign key — W2 must not add one here
+///     retroactively unless it also ships the compound-ownership pattern
+///     documented in README.
+///   - Row-level security, fail-closed: a connection that has not set the
+///     transaction-local `app.current_owner` GUC sees ZERO rows, ever.
+///     `kal_platform` has explicit per-table exemption policies (SELECT/DELETE
+///     only) for the enumerated cross-owner job shapes (ADR-0002 §3).
+model WeightLog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Immutable consumer owner id (I1). Never exposed as an authorization
+  /// control by clients — ownership is re-verified server-side (I6).
+  ownerId String @map("owner_id") @db.Uuid
+
+  /// When the weigh-in happened (user's measurement instant, UTC).
+  recordedAt DateTime @map("recorded_at") @db.Timestamptz(6)
+
+  /// Body weight in kilograms, two-decimal precision (PRD §21 "Weight log":
+  /// timestamped weight entries per owner, input to trend smoothing).
+  weightKg Decimal @map("weight_kg") @db.Decimal(5, 2)
+
+  @@index([ownerId, recordedAt])
+  @@map("weight_log")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 domain sections — RESERVED (tables land with their wave; do not
+// build early). Order follows ARCHITECTURE §9 module map / PLAN.md §4.
+// ---------------------------------------------------------------------------
+
+// identity   (W2)  — consumer accounts, credentials (argon2id), sessions
+//                    (JWT lifecycle), sign-in identifiers (phone/email/username)
+// consent    (W5)  — per-purpose consent records with grant/withdrawal history
+// tracking   (W3)  — foods, serving variants, diary entries (frozen nutrient
+//                    snapshots, I11), diary days
+// journal    (W4)  — exercise catalog, workout sessions, routines, PRs
+// goals      (W5)  — goal setup, versioned target profiles/snapshots,
+//                    trend/streak inputs (weight_log above is its health table)
+// community  (W6)  — UGC meal-prep/recipe posts, engagement, moderation states
+// content    (W7)  — Kal-curated meal ideas, review workflow, revisions
+// sync       (W3)  — client-op ledger (dedupe on owner + client op ID),
+//                    per-owner opaque cursors, tombstones
+// lifecycle  (W6)  — export/deletion jobs, retention-exception records
+// notifications (W5) — per-purpose dispatch records, idempotency keys
+// analytics  (later W) — frozen-metric event tables (no health data, I12)
+// admin      (W6)  — privileged-plane queue/grant records (audit_events above
+//                    is its log; the plane itself is W6+)
+
+// ---------------------------------------------------------------------------
+// Phase 2 / Phase 3 — RESERVED BOUNDARIES ONLY (ARCHITECTURE §23).
+// No tables, no columns, no seeds for these phases before their gate.
+// ---------------------------------------------------------------------------
+
+// premium   (Phase 2) — entitlement-hook seam only until HD-30 gates the build
+// catalog   (Phase 3) — vendor menu items, availability TTL (HD-33 for links)
+// matching  (Phase 3) — macro-match config (HD-13 gates the engine)
+// ordering  (Phase 3) — canonical order state machine, zones (C-1 gates dispatch)
+// payments  (Phase 3) — PSP ledger; blocked on HD-04/HD-05
+// delivery  (Phase 3) — per-vendor exclusive election (D-08); HD-08 couriers
+// vendor    (Phase 3) — branch onboarding/KYB, one account per branch
+// settlement (Phase 3) — weekly cycle, statements, COD netting per HD-06
