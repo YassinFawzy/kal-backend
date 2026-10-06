@@ -13,7 +13,6 @@
  * registry's generic sentences. Content-Type is `application/problem+json`.
  */
 import { ArgumentsHost, BadRequestException, Catch, ExceptionFilter, HttpException, HttpStatus, Logger, NotFoundException } from '@nestjs/common';
-import { HttpArgumentsHost } from '@nestjs/common/interfaces';
 import { Response } from 'express';
 import { KAL_PROBLEM_CODES, KalProblemCode } from './error-codes.js';
 import { KalProblemException } from './kal-problem.exception.js';
@@ -28,8 +27,7 @@ export class ProblemDetailsFilter implements ExceptionFilter {
   constructor(private readonly requestContext: RequestContextService) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
-    const http: HttpArgumentsHost = host.switchToHttp();
-    const response = http.getResponse<Response>();
+    const response = host.switchToHttp().getResponse<Response>();
 
     const body = this.toProblemDetails(exception);
     const metadata = KAL_PROBLEM_CODES[body.code];

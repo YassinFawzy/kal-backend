@@ -8,15 +8,16 @@
  * or whether any object exists (I7). The validated context is stored in the
  * request scope for the owning module's services to use (I1).
  */
-import { CanActivate, ExecutionContext, Injectable, UseGuards } from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable, UseGuards, Inject } from '@nestjs/common';
 import { KalProblemException } from '../problems/kal-problem.exception.js';
 import { OwnerResolution } from './owner-context.js';
-import { OwnerContextResolver } from './owner-context.resolver.js';
+import { OWNER_CONTEXT_RESOLVER, type OwnerContextResolver } from './owner-context.resolver.js';
 import { RequestContextService } from './request-context.service.js';
 
 @Injectable()
 export class OwnerContextGuard implements CanActivate {
   constructor(
+    @Inject(OWNER_CONTEXT_RESOLVER)
     private readonly resolver: OwnerContextResolver,
     private readonly requestContext: RequestContextService,
   ) {}

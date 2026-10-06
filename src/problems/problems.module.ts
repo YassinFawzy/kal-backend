@@ -6,11 +6,11 @@ import { ProblemDetailsFilter } from './problem-details.filter.js';
 /**
  * Shared error/problem-details layer (I7). Registers the global filter once;
  * every module emits errors exclusively as `KalProblemException` with codes
- * from the frozen registry.
+ * from the frozen registry. (The filter is registered via APP_FILTER —
+ * global, not exported: nothing injects it by class token.)
  */
 @Module({
   imports: [RequestContextMenu],
   providers: [{ provide: APP_FILTER, useClass: ProblemDetailsFilter }],
-  exports: [ProblemDetailsFilter],
 })
 export class ProblemsModule {}

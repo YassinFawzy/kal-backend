@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
+import { OWNER_CONTEXT_RESOLVER } from './owner-context.resolver.js';
 import { OwnerContextGuard } from './owner-context.guard.js';
-import { NoOwnerContextResolver, OwnerContextResolver } from './owner-context.resolver.js';
+import { NoOwnerContextResolver } from './owner-context.resolver.js';
 import { RequestContextMiddleware } from './request-context.middleware.js';
 import { RequestContextService } from './request-context.service.js';
 
@@ -14,9 +15,9 @@ import { RequestContextService } from './request-context.service.js';
   providers: [
     RequestContextService,
     RequestContextMiddleware,
-    { provide: OwnerContextResolver, useClass: NoOwnerContextResolver },
+    { provide: OWNER_CONTEXT_RESOLVER, useClass: NoOwnerContextResolver },
     OwnerContextGuard,
   ],
-  exports: [RequestContextService, RequestContextMiddleware, OwnerContextResolver, OwnerContextGuard],
+  exports: [RequestContextService, RequestContextMiddleware, OWNER_CONTEXT_RESOLVER, OwnerContextGuard],
 })
 export class RequestContextMenu {}

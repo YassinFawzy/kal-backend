@@ -12,6 +12,9 @@ import { Injectable } from '@nestjs/common';
 import { IncomingMessage } from 'node:http';
 import { OwnerResolution } from './owner-context.js';
 
+/** DI token for the resolver seam (interface — cannot be a class token). */
+export const OWNER_CONTEXT_RESOLVER = Symbol('OWNER_CONTEXT_RESOLVER');
+
 export interface OwnerContextResolver {
   resolve(request: IncomingMessage): OwnerResolution | Promise<OwnerResolution>;
 }

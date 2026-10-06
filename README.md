@@ -24,17 +24,33 @@ pnpm install
 ## Run
 
 ```bash
+cp .env.example .env             # then set your local DATABASE_URL credentials
+pnpm install && pnpm prisma generate   # generated client is gitignored — regenerate after clone/schema changes
 pnpm start:dev    # dev server with watch mode → http://localhost:3000
-pnpm start        # compiled production mode
+pnpm start        # compiled production mode (dist/src/main.js)
 ```
+
+**Boot-time validation (I15):** the process validates its configuration BEFORE any listener binds — a missing `DATABASE_URL`, a malformed connection string, or a placeholder-class password ("changeme"/"TODO"-class values) refuses the boot with a non-leaking message and a non-zero exit.
+
+### W1 surface (infrastructure wave)
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Liveness — `{"status":"ok"}` |
+| `GET /health/ready` | Readiness — `200 {"status":"ok"}` or `503` `UNAVAILABLE` problem-details |
+| `GET /probe/problem-details` | Documented `VALIDATION_FAILED` fixture (byte-stable example) |
+| `GET /probe/owner-context` | Fail-closed owner-context proof (I2) — always `403 FORBIDDEN_OWNER` in W1 (no identity plane yet) |
+| `GET /contracts/w1` | Served contract fixtures (conventions §6) |
+
+Every error response is an RFC 9457-style problem-details envelope with a code from the frozen registry (`docs/api/conventions.md` §4) and a `requestId` (echoed `X-Request-Id` or generated).
 
 ## Checks
 
 ```bash
 pnpm lint         # oxlint (type-aware)
 pnpm build        # nest build (also the typecheck gate for now)
-pnpm test         # unit tests (vitest via the Nest template)
-pnpm test:e2e     # e2e — start `pnpm start:dev` in another terminal first
+pnpm test         # unit tests (vitest; specs colocated in src/)
+pnpm test:e2e     # e2e (vitest) — boots the real AppModule in-process; NO running server or database required
 ```
 
 ## Local database
@@ -48,7 +64,7 @@ createdb kal                  # once, if it does not exist yet
 
 All agents and sessions target this database via `DATABASE_URL` in `.env` (never committed). Ephemeral test databases for the A/B/C security harness are created/dropped by the test harness itself (the Wave 1 pattern below — see `prisma/migrations`).
 
-> Prisma 7 note: the `prisma-client` generator is adapter-based — instantiating the generated client requires a driver adapter (e.g. `@prisma/adapter-pg` wrapping `pg`). `prisma/seed.ts` shows the pattern; the dependency lands via the backend's own `package.json`.
+> Prisma 7 note: the `prisma-client` generator is adapter-based — instantiating the generated client requires a driver adapter. `@prisma/adapter-pg` (wrapping the repo's `pg` dependency) is the sanctioned adapter; `src/db/prisma.service.ts` (application) and `prisma/seed.ts` (seed scaffold) both show the pattern. The generated client lands in `generated/` (gitignored) via `pnpm prisma generate` and is compiled as part of `pnpm build` (its `.ts`-extension internal imports are rewritten by `rewriteRelativeImportExtensions` in `tsconfig.json`).
 
 ## Database migrations (workflow)
 
