@@ -19,6 +19,7 @@
 import { Controller, Get, Logger } from '@nestjs/common';
 import type { Request } from 'express';
 import { KalProblemException } from '../problems/kal-problem.exception.js';
+import { redactTextForLog } from '../problems/redact.js';
 import { RequireOwnerContext } from '../request-context/owner-context.guard.js';
 import { RequestContextService } from '../request-context/request-context.service.js';
 import { ReadinessCheck, injectReadinessChecks } from './readiness.js';
@@ -43,10 +44,12 @@ export class HealthController {
       try {
         await check.check();
       } catch (error) {
-        // Internal log only: check name + correlation id. The response body
-        // carries no diagnostic detail whatsoever (I7/I12).
+        // Internal log only: check name + correlation id + scrubbed cause.
+        // The response body carries no diagnostic detail whatsoever (I7/I12).
         this.logger.warn(
-          `readiness: check "${check.name}" failed requestId=${this.requestContext.requestIdForError()}`,
+          `readiness: check "${check.name}" failed requestId=${this.requestContext.requestIdForError()} cause=${redactTextForLog(
+            error instanceof Error ? error.message : 'unknown',
+          )}`,
         );
         throw new KalProblemException('UNAVAILABLE');
       }
