@@ -10,9 +10,10 @@
  * process (conventions.md §6.2 `health.readiness`).
  *
  * Scope note (W1): this service is infrastructure plumbing. Request-scope
- * data access against owned tables (with `SET ROLE kal_app` + owner GUC per
+ * data access against owned tables (with `SET ROLE kal_app` + the per-user
+ * GUC per
  * the README "Roles & row-level security" pattern) lands with the first
- * owner-data wave (W2/W3); nothing in W1 touches consumer-owned tables.
+ * user-data wave (W2/W3); nothing in W1 touches consumer tables.
  */
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';

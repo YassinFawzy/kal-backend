@@ -2,7 +2,7 @@
  * Kal — request-scoped context over AsyncLocalStorage.
  *
  * Holds the correlation id (conventions.md §0: echoed or generated
- * X-Request-Id) and, once an owner is resolved, the validated OwnerContext
+ * X-Request-Id) and, once a user is resolved, the validated UserContext
  * (I2). The middleware opens the ALS scope around the whole downstream
  * chain, so guards, handlers, and the problem-details filter all observe
  * the same request context without threading parameters.
@@ -10,7 +10,7 @@
 import { Injectable } from '@nestjs/common';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
-import { OwnerContext } from './owner-context.js';
+import { UserContext } from './user-context.js';
 
 export interface RequestContext {
   readonly requestId: string;
@@ -43,19 +43,19 @@ export class RequestContextService {
     return this.getRequestId() ?? randomUUID();
   }
 
-  getOwnerContext(): OwnerContext | undefined {
-    const store = this.storage.getStore() as (RequestContext & { ownerContext?: OwnerContext }) | undefined;
-    return store?.ownerContext;
+  getUserContext(): UserContext | undefined {
+    const store = this.storage.getStore() as (RequestContext & { userContext?: UserContext }) | undefined;
+    return store?.userContext;
   }
 
-  setOwnerContext(context: OwnerContext): void {
-    const store = this.storage.getStore() as (RequestContext & { ownerContext?: OwnerContext }) | undefined;
+  setUserContext(context: UserContext): void {
+    const store = this.storage.getStore() as (RequestContext & { userContext?: UserContext }) | undefined;
     if (store === undefined) {
       // Fail closed: no ALS scope means no request context — refuse instead
       // of silently storing a context nobody can retrieve (I2).
-      throw new Error('request-context: no active request scope; cannot store owner context');
+      throw new Error('request-context: no active request scope; cannot store user context');
     }
-    Object.defineProperty(store, 'ownerContext', {
+    Object.defineProperty(store, 'userContext', {
       value: context,
       writable: false,
       enumerable: true,

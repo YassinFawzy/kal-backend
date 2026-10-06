@@ -11,7 +11,9 @@
 //   - Primary keys are server-generated UUIDs (gen_random_uuid(), PostgreSQL 13+).
 //   - Timestamps are timestamptz (UTC instants; local-day boundaries are
 //     computed in domain logic, Africa/Cairo default — ARCHITECTURE §16).
-//   - Owner columns are immutable UUIDs (see README "Roles & row-level security").
+//   - Per-plane id columns are immutable UUIDs — consumers `user_id`, vendors
+//     `vendor_id`, drivers `driver_user_id`, admins `admin_id` (I1; see README
+//     "Roles & row-level security").
 //   - Roles, GRANTs, and RLS policies ship as raw SQL inside migrations,
 //     never as ad hoc scripts (ADR-0002 §4).
 
@@ -60,36 +62,37 @@ model AuditEvent {
   @@map("audit_events")
 }
 
-/// RLS pilot — consumer-owned health table (ADR-0002 §2.1 "weight logs").
-/// Minimal Wave-1 shape per the s1 task contract; Wave 5 (goals) extends this
-/// table FORWARD-ONLY (additional columns via new migrations; the columns
-/// shipped here are never rewritten or repurposed).
+/// RLS pilot — consumer health table, one user's rows (ADR-0002 §2.1 "weight
+/// logs"). Minimal Wave-1 shape per the s1 task contract; Wave 5 (goals)
+/// extends this table FORWARD-ONLY (additional columns via new migrations; the
+/// columns shipped here are never rewritten or repurposed).
 ///
 /// Isolation (the point of the pilot):
-///   - owner_id is immutable (column-level UPDATE grant excludes it) and
+///   - user_id is immutable (column-level UPDATE grant excludes it) and
 ///     NOT NULL; there is no consumer table yet (identity lands in W2), so
 ///     there is deliberately no foreign key — W2 must not add one here
-///     retroactively unless it also ships the compound-ownership pattern
+///     retroactively unless it also ships the compound user-reference pattern
 ///     documented in README.
 ///   - Row-level security, fail-closed: a connection that has not set the
-///     transaction-local `app.current_owner` GUC sees ZERO rows, ever.
+///     transaction-local `app.user_id` GUC sees ZERO rows, ever.
 ///     `kal_platform` has explicit per-table exemption policies (SELECT/DELETE
-///     only) for the enumerated cross-owner job shapes (ADR-0002 §3).
+///     only) for the enumerated cross-user job shapes (ADR-0002 §3).
 model WeightLog {
   id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
 
-  /// Immutable consumer owner id (I1). Never exposed as an authorization
-  /// control by clients — ownership is re-verified server-side (I6).
-  ownerId String @map("owner_id") @db.Uuid
+  /// Immutable consumer user id (I1 — per-plane id: consumers `user_id`).
+  /// Never exposed as an authorization control by clients — the user binding
+  /// is re-verified server-side (I6).
+  userId String @map("user_id") @db.Uuid
 
   /// When the weigh-in happened (user's measurement instant, UTC).
   recordedAt DateTime @map("recorded_at") @db.Timestamptz(6)
 
   /// Body weight in kilograms, two-decimal precision (PRD §21 "Weight log":
-  /// timestamped weight entries per owner, input to trend smoothing).
+  /// timestamped weight entries per user, input to trend smoothing).
   weightKg Decimal @map("weight_kg") @db.Decimal(5, 2)
 
-  @@index([ownerId, recordedAt])
+  @@index([userId, recordedAt])
   @@map("weight_log")
 }
 
@@ -108,8 +111,8 @@ model WeightLog {
 //                    trend/streak inputs (weight_log above is its health table)
 // community  (W6)  — UGC meal-prep/recipe posts, engagement, moderation states
 // content    (W7)  — Kal-curated meal ideas, review workflow, revisions
-// sync       (W3)  — client-op ledger (dedupe on owner + client op ID),
-//                    per-owner opaque cursors, tombstones
+// sync       (W3)  — client-op ledger (dedupe on user + client op ID),
+//                    per-user opaque cursors, tombstones
 // lifecycle  (W6)  — export/deletion jobs, retention-exception records
 // notifications (W5) — per-purpose dispatch records, idempotency keys
 // analytics  (later W) — frozen-metric event tables (no health data, I12)

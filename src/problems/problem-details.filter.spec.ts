@@ -39,15 +39,15 @@ describe('ProblemDetailsFilter (I7)', () => {
   it('serializes KalProblemException per the registry with problem+json', () => {
     const filter = new ProblemDetailsFilter(new RequestContextService());
     const { host, response } = fakeHost();
-    filter.catch(new KalProblemException('FORBIDDEN_OWNER'), host);
+    filter.catch(new KalProblemException('FORBIDDEN'), host);
     expect(response.status).toBe(403);
     expect(response.headers['content-type']).toBe('application/problem+json');
     const body = JSON.parse(response.body) as Record<string, unknown>;
     expect(body).toMatchObject({
-      code: 'FORBIDDEN_OWNER',
+      code: 'FORBIDDEN',
       status: 403,
       title: 'Forbidden',
-      type: 'urn:kal:problem:forbidden-owner',
+      type: 'urn:kal:problem:forbidden',
     });
     expect(typeof body['requestId']).toBe('string');
   });
@@ -55,10 +55,10 @@ describe('ProblemDetailsFilter (I7)', () => {
   it('maps route 404 to a generic NOT_FOUND without echoing the path', () => {
     const filter = new ProblemDetailsFilter(new RequestContextService());
     const { host, response } = fakeHost();
-    filter.catch(new NotFoundException('Cannot GET /owners/abc/entries'), host);
+    filter.catch(new NotFoundException('Cannot GET /users/abc/entries'), host);
     expect(response.status).toBe(404);
     expect(response.body).not.toContain('Cannot GET');
-    expect(response.body).not.toContain('/owners/abc/entries');
+    expect(response.body).not.toContain('/users/abc/entries');
     const body = JSON.parse(response.body) as Record<string, unknown>;
     expect(body['code']).toBe('NOT_FOUND');
   });

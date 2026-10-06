@@ -12,7 +12,7 @@
  *      runner (`prisma migrate deploy`), as the admin/migration user from
  *      DATABASE_URL. Production-faithful: the same path used everywhere.
  *   3. Behavioral assertions — NEVER run over the admin connection's implicit
- *      superuser authority: use `helpers/acting-owner.ts`, which SET ROLEs to
+ *      superuser authority: use `helpers/acting-user.ts`, which SET ROLEs to
  *      `kal_app`/`kal_platform` and asserts `current_user` first. Superusers
  *      bypass row security unconditionally, so a superuser assertion is proof
  *      of nothing (README "Roles & row-level security").
@@ -46,7 +46,7 @@ export interface MigrationApplyResult {
 export interface EphemeralKalDb {
   /** Scratch database name (`kal_it_<label>_<rand>`). */
   readonly name: string;
-  /** Pooled connections to the scratch DB as the admin user. Behavioral tests must go through acting-owner helpers. */
+  /** Pooled connections to the scratch DB as the admin user. Behavioral tests must go through acting-user helpers. */
   readonly pool: Pool;
   /**
    * Apply the full migration history with the real Prisma runner.

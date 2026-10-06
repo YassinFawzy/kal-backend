@@ -29,9 +29,9 @@ export const KAL_PROBLEM_CODES = {
     urn: 'urn:kal:problem:unauthenticated',
     title: 'Unauthenticated',
   },
-  FORBIDDEN_OWNER: {
+  FORBIDDEN: {
     httpStatus: 403,
-    urn: 'urn:kal:problem:forbidden-owner',
+    urn: 'urn:kal:problem:forbidden',
     title: 'Forbidden',
   },
   NOT_FOUND: {
@@ -74,7 +74,7 @@ export const KAL_PROBLEM_CODE_NAMES = Object.keys(KAL_PROBLEM_CODES) as readonly
 export const GENERIC_DETAIL: Readonly<Record<KalProblemCode, string>> = {
   VALIDATION_FAILED: 'One or more fields are invalid.',
   UNAUTHENTICATED: 'Credentials are missing, malformed, expired, or revoked.',
-  FORBIDDEN_OWNER: 'The current context is not permitted to perform this operation.',
+  FORBIDDEN: 'The current context is not permitted to perform this operation.',
   NOT_FOUND: 'The requested resource was not found, or it does not belong to the caller.',
   CONFLICT: 'The request conflicts with the current state.',
   RATE_LIMITED: 'Too many requests; retry later.',

@@ -6,7 +6,7 @@
  * credentials or secrets, no real health content (PLAN.md §2.10 / CLAUDE.md).
  *
  * Purpose in Wave 1: prove the seed pattern (Prisma client + idempotent upserts)
- * and provide the synthetic owner rows the RLS pilot demonstration uses. Domain
+ * and provide the synthetic user rows the RLS pilot demonstration uses. Domain
  * fixtures land with their waves and follow this same shape.
  *
  * Run (local dev only — refuses to run against anything but localhost):
@@ -21,10 +21,10 @@ import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../generated/prisma/client.ts";
 
-/** Fixture owner A — synthetic UUID reserved for fixtures, not a real account. */
-const FIXTURE_OWNER_A = "00000000-0000-4000-8000-0000000000a1";
-/** Fixture owner B — synthetic UUID reserved for fixtures, not a real account. */
-const FIXTURE_OWNER_B = "00000000-0000-4000-8000-0000000000b2";
+/** Fixture user A — synthetic UUID reserved for fixtures, not a real account. */
+const FIXTURE_USER_A = "00000000-0000-4000-8000-0000000000a1";
+/** Fixture user B — synthetic UUID reserved for fixtures, not a real account. */
+const FIXTURE_USER_B = "00000000-0000-4000-8000-0000000000b2";
 /** Fixture row ids — fixed so re-runs upsert instead of duplicating. */
 const FIXTURE_WEIGHT_A = "00000000-0000-4000-8000-0000000000fa";
 const FIXTURE_WEIGHT_B = "00000000-0000-4000-8000-0000000000fb";
@@ -50,14 +50,14 @@ function assertLocalDev(): void {
 }
 
 async function main(): Promise<void> {
-  // Synthetic weigh-ins: one per fixture owner. Values are invented; nothing
+  // Synthetic weigh-ins: one per fixture user. Values are invented; nothing
   // here is a real person's measurement.
   await prisma.weightLog.upsert({
     where: { id: FIXTURE_WEIGHT_A },
     update: { weightKg: 82.5 },
     create: {
       id: FIXTURE_WEIGHT_A,
-      ownerId: FIXTURE_OWNER_A,
+      userId: FIXTURE_USER_A,
       recordedAt: new Date("2026-10-01T08:00:00Z"),
       weightKg: 82.5,
     },
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     update: { weightKg: 74.3 },
     create: {
       id: FIXTURE_WEIGHT_B,
-      ownerId: FIXTURE_OWNER_B,
+      userId: FIXTURE_USER_B,
       recordedAt: new Date("2026-10-02T08:00:00Z"),
       weightKg: 74.3,
     },

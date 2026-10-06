@@ -44,8 +44,8 @@ describe('buildProblemDetails (conventions.md §5)', () => {
   });
 
   it('is deterministic per (code, situation class) — same inputs, identical body', () => {
-    const a = buildProblemDetails({ code: 'FORBIDDEN_OWNER', requestId: REQUEST_ID });
-    const b = buildProblemDetails({ code: 'FORBIDDEN_OWNER', requestId: REQUEST_ID });
+    const a = buildProblemDetails({ code: 'FORBIDDEN', requestId: REQUEST_ID });
+    const b = buildProblemDetails({ code: 'FORBIDDEN', requestId: REQUEST_ID });
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 });
