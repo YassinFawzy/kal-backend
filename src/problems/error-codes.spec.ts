@@ -11,7 +11,7 @@ describe('error-code registry (conventions.md §4)', () => {
       [
         'VALIDATION_FAILED',
         'UNAUTHENTICATED',
-        'FORBIDDEN_OWNER',
+        'FORBIDDEN',
         'NOT_FOUND',
         'CONFLICT',
         'RATE_LIMITED',
@@ -32,9 +32,9 @@ describe('error-code registry (conventions.md §4)', () => {
       urn: 'urn:kal:problem:unauthenticated',
       title: 'Unauthenticated',
     });
-    expect(KAL_PROBLEM_CODES['FORBIDDEN_OWNER']).toEqual({
+    expect(KAL_PROBLEM_CODES['FORBIDDEN']).toEqual({
       httpStatus: 403,
-      urn: 'urn:kal:problem:forbidden-owner',
+      urn: 'urn:kal:problem:forbidden',
       title: 'Forbidden',
     });
     expect(KAL_PROBLEM_CODES['NOT_FOUND']).toEqual({

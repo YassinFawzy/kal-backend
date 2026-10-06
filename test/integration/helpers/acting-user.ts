@@ -1,6 +1,6 @@
 /**
- * Acting-as-owner helper — the harness primitive every later wave reuses
- * (ADR-0002 "Consequences for testing": a one-time "acting as owner X"
+ * Acting-as-user helper — the harness primitive every later wave reuses
+ * (ADR-0002 "Consequences for testing": a one-time "acting as user X"
  * transaction helper; feature tests run inside it transparently).
  *
  * Production-faithfulness rules locked by the task contract:
@@ -10,7 +10,7 @@
  *     first does `SET LOCAL ROLE <role>`, then PROVES `current_user` matches —
  *     a superuser connection that forgot to SET ROLE would bypass row security
  *     silently, so the proof is part of the helper (fail-closed harness).
- *   - The owner context is the transaction-local GUC `app.current_owner`,
+ *   - The user context is the transaction-local GUC `app.user_id`,
  *     set with `set_config(..., true)` exactly the way sanctioned application
  *     code must set it (README "Roles & row-level security").
  *   - Suites default to ROLLBACK: cases mutate and throw away their effects.
@@ -22,15 +22,15 @@
  *     malformed GUC casts, privilege escalation attempts).
  *
  * Session-state caveat (proven by the harness, documented for later waves):
- * after a session has set `app.current_owner` once (even transaction-locally),
+ * after a session has set `app.user_id` once (even transaction-locally),
  * an UNSET GUC reads back as the empty string — not SQL NULL — so a
  * no-context query fails with the 22P02 uuid-cast error instead of returning
  * zero rows. Both are fail-closed (no rows, no leak); only a session that has
  * NEVER set the GUC exhibits the "NULL ⇒ zero rows" form. Suites assert both
  * realities; `openRoleSession(db, true)` + `inRoleTx` give full control over
  * session state for such probes. Practical consequence for application code:
- * ownerless work must run on sessions that never set the GUC (or must reset
- * it), and pools must treat 22P02 on ownerless paths as fail-closed.
+ * context-less work must run on sessions that never set the GUC (or must
+ * reset it), and pools must treat 22P02 on context-less paths as fail-closed.
  *
  * Escalation caveat: `SET ROLE` permission is checked against the SESSION
  * user. The harness connects as the admin/migration user (a superuser on the
@@ -43,19 +43,19 @@
  * the production posture is the membership graph, not this harness's session
  * user.
  *
- * Fixtures: OWNER_A/B/C are synthetic UUIDs with no relationship to any real
+ * Fixtures: USER_A/B/C are synthetic UUIDs with no relationship to any real
  * identity. Weight values used by suites are neutral numeric placeholders.
  */
 
 import type { QueryResult, QueryResultRow } from 'pg';
 import type { EphemeralKalDb, IsolatedClient } from './ephemeral-db.js';
 
-/** Synthetic owner A — owns the attack-target rows. */
-export const OWNER_A = '11111111-1111-4111-8111-111111111111';
-/** Synthetic owner B — the adversary (valid credentials, hostile intent). */
-export const OWNER_B = '22222222-2222-4222-8222-222222222222';
-/** Synthetic owner C — the control (parity proves denials are authorization-driven). */
-export const OWNER_C = '33333333-3333-4333-8333-333333333333';
+/** Synthetic user A — owns the attack-target rows. */
+export const USER_A = '11111111-1111-4111-8111-111111111111';
+/** Synthetic user B — the adversary (valid credentials, hostile intent). */
+export const USER_B = '22222222-2222-4222-8222-222222222222';
+/** Synthetic user C — the control (parity proves denials are authorization-driven). */
+export const USER_C = '33333333-3333-4333-8333-333333333333';
 
 export type KalRole = 'kal_app' | 'kal_platform';
 
@@ -93,13 +93,13 @@ export async function openRoleSession(db: EphemeralKalDb, fresh: boolean): Promi
 
 /**
  * Run `fn` inside one transaction on `session`, acting as `role` (with an
- * optional transaction-local owner context). Always ROLLBACKs unless
+ * optional transaction-local user context). Always ROLLBACKs unless
  * `commit: true`; the session stays open for further transactions.
  */
 export async function inRoleTx(
   session: RoleSession,
   role: KalRole,
-  owner: string | null,
+  userId: string | null,
   fn: (query: RoleQuery) => Promise<void>,
   commit = false,
 ): Promise<void> {
@@ -114,8 +114,8 @@ export async function inRoleTx(
           'Superuser sessions must never assert row-security behavior (README "Roles & row-level security").',
       );
     }
-    if (owner !== null) {
-      await query('SELECT set_config($1, $2, true)', ['app.current_owner', owner]);
+    if (userId !== null) {
+      await query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
     }
     await fn(query);
     await session.query(commit ? 'COMMIT' : 'ROLLBACK');
@@ -129,35 +129,35 @@ export async function inRoleTx(
 export async function asDbRole(
   db: EphemeralKalDb,
   role: KalRole,
-  owner: string | null,
+  userId: string | null,
   fn: (query: RoleQuery) => Promise<void>,
   options: RoleTxOptions = {},
 ): Promise<void> {
   const session = await openRoleSession(db, options.fresh === true);
   try {
-    await inRoleTx(session, role, owner, fn, options.commit === true);
+    await inRoleTx(session, role, userId, fn, options.commit === true);
   } finally {
     await session.finish();
   }
 }
 
-/** Act as the request-scope app role with an owner context (the sanctioned path). */
-export function asOwner(
+/** Act as the request-scope app role with a user context (the sanctioned path). */
+export function asUser(
   db: EphemeralKalDb,
-  owner: string,
+  userId: string,
   fn: (query: RoleQuery) => Promise<void>,
   options: RoleTxOptions = {},
 ): Promise<void> {
-  return asDbRole(db, 'kal_app', owner, fn, options);
+  return asDbRole(db, 'kal_app', userId, fn, options);
 }
 
 /**
- * Act as the request-scope app role with NO owner context. Defaults to a
+ * Act as the request-scope app role with NO user context. Defaults to a
  * FRESH session (the GUC never set) — the faithful "no context" shape. Pass
  * `{ fresh: false }` to probe pooled-session behavior (see the session-state
  * caveat in the module docblock: expect 22P02, still fail-closed).
  */
-export function asOwnerlessApp(
+export function asUserlessApp(
   db: EphemeralKalDb,
   fn: (query: RoleQuery) => Promise<void>,
   options: RoleTxOptions = { fresh: true },
@@ -172,9 +172,9 @@ export function asOwnerlessApp(
 export function asPlatform(
   db: EphemeralKalDb,
   fn: (query: RoleQuery) => Promise<void>,
-  options: RoleTxOptions & { readonly owner?: string } = {},
+  options: RoleTxOptions & { readonly user?: string } = {},
 ): Promise<void> {
-  return asDbRole(db, 'kal_platform', options.owner ?? null, fn, options);
+  return asDbRole(db, 'kal_platform', options.user ?? null, fn, options);
 }
 
 export interface CapturedPgError {

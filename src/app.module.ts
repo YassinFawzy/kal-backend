@@ -10,7 +10,7 @@ import { SchedulerModule } from './scheduler/scheduler.module.js';
 
 /**
  * Kal API — NestJS modular monolith (ARCHITECTURE §6/§9). Phase 1 infra
- * modules only: config (I15), problem-details (I7), request/owner context
+ * modules only: config (I15), problem-details (I7), request/user context
  * (I2), audit (I14), scheduler, health/contracts fixtures.
  */
 @Module({
@@ -29,7 +29,7 @@ import { SchedulerModule } from './scheduler/scheduler.module.js';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    // Opens the request scope (correlation id + owner-context storage)
+    // Opens the request scope (correlation id + user-context storage)
     // around every route.
     consumer.apply(RequestContextMiddleware).forRoutes('{*splat}');
   }

@@ -27,7 +27,7 @@ This repo was probably cloned standalone, outside the Kal folder. **Do not conti
 ## Standing rules (full versions live in the Kal docs repo)
 
 - Modular monolith: modules talk only through exported service interfaces; **no module queries another module's tables**.
-- Every read/write of user-owned data goes through the owning module's service layer with a validated `OwnerContext`; unscoped queries are review-blocking defects. Denials must never confirm another owner's object exists.
+- Every read/write of user-owned data goes through the owning module's service layer with a validated `UserContext`; unscoped queries are review-blocking defects. Denials must never confirm another user's object exists.
 - Never resolve an open HD-xx decision or an open document conflict in code — stop and ask the founder. Wire configuration points, leave values to the founder.
 - Phase discipline: build Phase 1 modules only; `premium` (Phase 2) and the Phase 3 modules (catalog, matching, ordering, payments, delivery, vendor, settlement) are reserved boundaries — do not build early.
 - Errors: RFC 9457-style problem details with stable application error codes. Money is integer piastres + currency code. No health data in logs or analytics.

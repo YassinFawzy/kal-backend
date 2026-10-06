@@ -1,6 +1,6 @@
 /**
  * Kal API e2e — boots the real AppModule and proves the W1 contract surface:
- * health/readiness, the problem-details fixtures, fail-closed owner-context
+ * health/readiness, the problem-details fixtures, fail-closed user-context
  * (I2), the served contract fixtures (round-trip per conventions.md §6.3),
  * and the boot-path refusal on placeholder credentials (I15).
  *
@@ -135,17 +135,17 @@ describe('problem-details probes (conventions.md §5/§6.2)', () => {
   });
 });
 
-describe('owner-context fail-closed proof (I2)', () => {
-  it('GET /probe/owner-context → 403 FORBIDDEN_OWNER for every caller shape in W1', async () => {
+describe('user-context fail-closed proof (I2)', () => {
+  it('GET /probe/user-context → 403 FORBIDDEN for every caller shape in W1', async () => {
     for (const headers of [
       {},
       { Authorization: 'Bearer not.a.jwt' },
       { Authorization: 'Basic dXNlcjpwYXNz' },
       { Authorization: 'Bearer' },
     ]) {
-      const response = await request(app.getHttpServer()).get('/probe/owner-context').set(headers).expect(403);
+      const response = await request(app.getHttpServer()).get('/probe/user-context').set(headers).expect(403);
       expect(response.headers['content-type']).toContain('application/problem+json');
-      expect(response.body['code']).toBe('FORBIDDEN_OWNER');
+      expect(response.body['code']).toBe('FORBIDDEN');
       expect(response.body['status']).toBe(403);
       // Generic sentence only — the denial never says which failure class (I7).
       expect(response.body['detail']).toBe('The current context is not permitted to perform this operation.');
@@ -155,7 +155,7 @@ describe('owner-context fail-closed proof (I2)', () => {
   it('denials are byte-identical modulo requestId across caller shapes (no oracle)', async () => {
     const bodies: ProblemDetailsBody[] = [];
     for (const headers of [{}, { Authorization: 'Bearer aaa.bbb.ccc' }, { Authorization: 'weird' }]) {
-      const response = await request(app.getHttpServer()).get('/probe/owner-context').set(headers).expect(403);
+      const response = await request(app.getHttpServer()).get('/probe/user-context').set(headers).expect(403);
       bodies.push(response.body as ProblemDetailsBody);
     }
     const normalized = bodies.map((body) => JSON.stringify({ ...body, requestId: '<normalized>' }));

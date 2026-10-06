@@ -6,7 +6,9 @@
  * forward-only; README "Database migrations" — clean-apply gate).
  *
  * Catalog assertions here pin the s1 contract (prisma/migrations/
- * 20261006081957_roles_rls_pilot + 20261006082537_role_contract_assertions).
+ * 20261006081957_roles_rls_pilot + 20261006082537_role_contract_assertions)
+ * plus the founder-directed user_id rename forward-fix
+ * (20261006145631_rename_weight_log_owner_to_user_id, ledger §10 2026-10-06).
  * Behavioral proof lives in rls-pilot.itspec.ts; this file proves the STRUCTURE
  * that behavior relies on exists after a cold apply — on every future cluster,
  * not just the dev machine.
@@ -20,6 +22,7 @@ const EXPECTED_MIGRATIONS = [
   '20261006081941_init_foundation',
   '20261006081957_roles_rls_pilot',
   '20261006082537_role_contract_assertions',
+  '20261006145631_rename_weight_log_owner_to_user_id',
 ] as const;
 
 let db: EphemeralKalDb;
@@ -111,41 +114,70 @@ describe('role contract (least-privilege, asserted by migration history)', () =>
 });
 
 describe('RLS pilot structure on weight_log', () => {
-  it('has row security ENABLED and FORCED (relrowsecurity + relforcerowsecurity)', async () => {
+  it('has row security ENABLED and FORCED, carries the renamed per-user column + index, no owner_id residue', async () => {
     const rows = await adminQuery<{ relrowsecurity: boolean; relforcerowsecurity: boolean }>(
       db,
       `SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = 'weight_log'::regclass`,
     );
     expect(rows.rows[0]).toEqual({ relrowsecurity: true, relforcerowsecurity: true });
+    // Founder-directed rename (ledger §10, 2026-10-06): forward-fix migration
+    // renames the column and its index; nothing with the retired names stays.
+    const columns = await adminQuery<{ column_name: string }>(
+      db,
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'weight_log' ORDER BY ordinal_position`,
+    );
+    expect(columns.rows.map((row) => row.column_name)).toEqual(['id', 'user_id', 'recorded_at', 'weight_kg']);
+    const indexes = await adminQuery<{ indexname: string }>(
+      db,
+      `SELECT indexname FROM pg_indexes WHERE tablename = 'weight_log' ORDER BY indexname`,
+    );
+    expect(indexes.rows.map((row) => row.indexname)).toEqual([
+      'weight_log_pkey',
+      'weight_log_user_id_recorded_at_idx',
+    ]);
   });
 
-  it('carries exactly the three documented policies (owner context + enumerated platform exemptions)', async () => {
+  it('carries exactly the three documented policies (user context + enumerated platform exemptions)', async () => {
     const rows = await adminQuery<{ policyname: string; cmd: string; roles: string[] }>(
       db,
       `SELECT policyname, cmd, roles FROM pg_policies WHERE tablename = 'weight_log' ORDER BY policyname`,
     );
     expect(rows.rows).toEqual([
-      { policyname: 'weight_log_owner_context', cmd: 'ALL', roles: '{kal_app}' },
       { policyname: 'weight_log_platform_deletion', cmd: 'DELETE', roles: '{kal_platform}' },
       { policyname: 'weight_log_platform_export', cmd: 'SELECT', roles: '{kal_platform}' },
+      { policyname: 'weight_log_user_context', cmd: 'ALL', roles: '{kal_app}' },
     ]);
   });
 
-  it('the owner policy is fail-closed on an unset GUC (current_setting(..., true) form, not plain current_setting)', async () => {
+  it('the user policy is fail-closed on an unset GUC (current_setting(..., true) form, not plain current_setting)', async () => {
     const rows = await adminQuery<{ qual: string; with_check: string }>(
       db,
-      `SELECT qual, with_check FROM pg_policies WHERE tablename = 'weight_log' AND policyname = 'weight_log_owner_context'`,
+      `SELECT qual, with_check FROM pg_policies WHERE tablename = 'weight_log' AND policyname = 'weight_log_user_context'`,
     );
     // The `true` argument makes current_setting return NULL when the GUC is
     // unset ⇒ the predicate is NULL ⇒ zero rows (fail closed, ADR-0002 §2).
     // (PG stores the normalized expression with an explicit ::text cast.)
-    expect(rows.rows[0]?.qual).toContain("current_setting('app.current_owner'::text, true)");
-    expect(rows.rows[0]?.with_check).toContain("current_setting('app.current_owner'::text, true)");
+    // GUC is `app.user_id` — the founder-directed rename recreated the policy
+    // precisely because a column rename does NOT rewrite the GUC string.
+    expect(rows.rows[0]?.qual).toContain("current_setting('app.user_id'::text, true)");
+    expect(rows.rows[0]?.with_check).toContain("current_setting('app.user_id'::text, true)");
+    // The renamed column is bound on both sides of the predicate.
+    expect(rows.rows[0]?.qual).toContain('user_id =');
+    expect(rows.rows[0]?.with_check).toContain('user_id =');
+    // No residue of the retired GUC name anywhere in the catalog.
+    const stale = await adminQuery<{ count: string }>(
+      db,
+      `SELECT count(*)::text AS count FROM pg_policies
+        WHERE tablename = 'weight_log'
+          AND (qual LIKE '%current_owner%' OR with_check LIKE '%current_owner%'
+               OR qual LIKE '%owner_id%' OR with_check LIKE '%owner_id%')`,
+    );
+    expect(stale.rows[0]?.count).toBe('0');
   });
 });
 
 describe('least-privilege grants', () => {
-  it('kal_app: SELECT/INSERT/DELETE on weight_log, column-scoped UPDATE only (owner_id immutable, I1)', async () => {
+  it('kal_app: SELECT/INSERT/DELETE on weight_log, column-scoped UPDATE only (user_id immutable, I1)', async () => {
     const tablePrivs = await adminQuery<{ priv_type: string; allowed: boolean }>(
       db,
       `SELECT privs.priv_type,
@@ -165,12 +197,12 @@ describe('least-privilege grants', () => {
       db,
       `SELECT cols.column_name,
               has_column_privilege('kal_app', 'weight_log', cols.column_name, 'UPDATE') AS updatable
-         FROM (VALUES ('owner_id'), ('recorded_at'), ('weight_kg')) AS cols(column_name)
+         FROM (VALUES ('user_id'), ('recorded_at'), ('weight_kg')) AS cols(column_name)
         ORDER BY cols.column_name`,
     );
     expect(columnPrivs.rows).toEqual([
-      { column_name: 'owner_id', updatable: false },
       { column_name: 'recorded_at', updatable: true },
+      { column_name: 'user_id', updatable: false },
       { column_name: 'weight_kg', updatable: true },
     ]);
   });

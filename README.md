@@ -39,7 +39,7 @@ pnpm start        # compiled production mode (dist/src/main.js)
 | `GET /health` | Liveness — `{"status":"ok"}` |
 | `GET /health/ready` | Readiness — `200 {"status":"ok"}` or `503` `UNAVAILABLE` problem-details |
 | `GET /probe/problem-details` | Documented `VALIDATION_FAILED` fixture (byte-stable example) |
-| `GET /probe/owner-context` | Fail-closed owner-context proof (I2) — always `403 FORBIDDEN_OWNER` in W1 (no identity plane yet) |
+| `GET /probe/user-context` | Fail-closed user-context proof (I2) — always `403 FORBIDDEN` in W1 (no identity plane yet) |
 | `GET /contracts/w1` | Served contract fixtures (conventions §6) |
 
 Every error response is an RFC 9457-style problem-details envelope with a code from the frozen registry (`docs/api/conventions.md` §4) and a `requestId` (echoed `X-Request-Id` or generated).
@@ -104,35 +104,35 @@ node prisma/seed.ts           # optional: synthetic fixtures (localhost only)
 Wave 1 establishes the structural-isolation pattern every later wave copies:
 
 - **`kal_app`** — request-scope application role. `NOLOGIN` group role: connections assume it via `SET ROLE kal_app` (per session/transaction). Least-privilege column/table GRANTs only; subject to RLS on health tables.
-- **`kal_platform`** — platform-scope bypass role for **enumerated** cross-owner jobs (export/deletion, retention, sync housekeeping). Bypass is explicit and per-table via exemption policies (e.g. `weight_log_platform_export`/`weight_log_platform_deletion`) — **never** a superuser or `BYPASSRLS` attribute, and never reachable from request-scope code paths.
+- **`kal_platform`** — platform-scope bypass role for **enumerated** cross-user jobs (export/deletion, retention, sync housekeeping). Bypass is explicit and per-table via exemption policies (e.g. `weight_log_platform_export`/`weight_log_platform_deletion`) — **never** a superuser or `BYPASSRLS` attribute, and never reachable from request-scope code paths.
 - **`role_contract_assertions` migration** asserts both roles' full contract (`NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`) idempotently — roles can pre-exist in a cluster; the migration normalizes them regardless of provenance.
-- **Fail-closed RLS** (pilot table `weight_log`, FORCE-enabled):
+- **Fail-closed RLS** (pilot table `weight_log`, FORCE-enabled). Naming note (founder directive, ledger §10 2026-10-06): the per-person column is `user_id` (per-plane ids: consumers `user_id`, vendors `vendor_id`, drivers `driver_user_id`, admins `admin_id`) and the context GUC is `app.user_id` — a 2026-10-06 forward-fix migration (`20261006145631_rename_weight_log_owner_to_user_id`) renamed the column, its index, and recreated the policy, **because `ALTER TABLE ... RENAME COLUMN` does NOT rewrite the GUC name string inside the policy expression** (the old policy would have kept reading the never-set `app.current_owner` and failed closed forever):
 
   ```sql
-  CREATE POLICY weight_log_owner_context ON weight_log
+  CREATE POLICY weight_log_user_context ON weight_log
     AS PERMISSIVE FOR ALL TO kal_app
-    USING (owner_id = current_setting('app.current_owner', true)::uuid)
-    WITH CHECK (owner_id = current_setting('app.current_owner', true)::uuid);
+    USING (user_id = current_setting('app.user_id', true)::uuid)
+    WITH CHECK (user_id = current_setting('app.user_id', true)::uuid);
   ```
 
-  The `app.current_owner` GUC is **transaction-local**: `SELECT set_config('app.current_owner', <owner uuid>, true)` inside the transaction that queries. Unset ⇒ NULL ⇒ **zero rows, ever**. Malformed ⇒ cast error ⇒ fail closed. Note: `set_config(..., true)` outside an explicit transaction reverts immediately (autocommit) — application code must always set it inside the transaction.
-- **Owner immutability**: `owner_id` has no UPDATE grant (column-level grants cover data columns only), and the RLS `WITH CHECK` rejects any write whose `owner_id` differs from the context — mutation of ownership is structurally impossible.
+  The `app.user_id` GUC is **transaction-local**: `SELECT set_config('app.user_id', <user uuid>, true)` inside the transaction that queries. Unset ⇒ NULL ⇒ **zero rows, ever**. Malformed ⇒ cast error ⇒ fail closed. Note: `set_config(..., true)` outside an explicit transaction reverts immediately (autocommit) — application code must always set it inside the transaction. Caveat pinned by the harness (F1): on a session that has set the GUC once, an unset GUC reads back `''` (not NULL) ⇒ 22P02 cast error — still fail-closed.
+- **User-id immutability**: `user_id` has no UPDATE grant (column-level grants cover data columns only), and the RLS `WITH CHECK` rejects any write whose `user_id` differs from the context — moving a row to another user is structurally impossible.
 - **Append-only audit** (`audit_events`, platform-owned, deliberately outside RLS scope): no UPDATE/DELETE grants for any role **and** a `BEFORE UPDATE/DELETE` trigger that raises — the trigger binds even the table owner; only a superuser could bypass it (break-glass territory, audited).
-- **Compound-ownership pattern for later waves (I3):** owned child tables carry `owner_id` and expose a composite key so cross-owner references are structurally impossible:
+- **Compound user-reference pattern for later waves (I3):** owned child tables carry the per-plane user id column and expose a composite key so cross-user references are structurally impossible:
 
   ```sql
-  -- parent: UNIQUE (id, owner_id); child:
+  -- parent: UNIQUE (id, user_id); child:
   CREATE TABLE child (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_id uuid NOT NULL,
+    user_id uuid NOT NULL,
     parent_id uuid NOT NULL,
-    FOREIGN KEY (parent_id, owner_id) REFERENCES parent (id, owner_id)
+    FOREIGN KEY (parent_id, user_id) REFERENCES parent (id, user_id)
   );
   ```
 
-  (The W1 tables stand alone — no consumer table exists yet, so `weight_log.owner_id` deliberately has no FK; the identity wave documents whether pilot tables adopt the composite pattern retroactively.)
+  (The W1 tables stand alone — no consumer table exists yet, so `weight_log.user_id` deliberately has no FK; the identity wave documents whether pilot tables adopt the composite pattern retroactively.)
 - **Never assert RLS behavior over a superuser connection** — superusers bypass RLS unconditionally. Verification connections use `SET ROLE kal_app` / `SET ROLE kal_platform` and assert on `current_user` (proof pattern in the Wave 1 merge request evidence).
-- Introspection: `psql "$DATABASE_URL" -c '\dp weight_log' -c "SELECT * FROM pg_policies;"`.
+- Introspection: `psql "$DATABASE_URL" -c '\dp weight_log' -c "SELECT * FROM pg_policies;"`. After the rename, `pg_policies` must show the recreated policy with the NEW GUC string — `weight_log_user_context … (user_id = (current_setting('app.user_id'::text, true))::uuid)` in both `qual` and `with_check`; `information_schema.columns` shows `user_id` (no `owner_id`), and `pg_indexes` shows `weight_log_user_id_recorded_at_idx`.
 
 ## A/B/C isolation harness (s4 — the pattern every wave reuses)
 
@@ -145,12 +145,12 @@ pnpm test:integration
 What the harness guarantees (ARCHITECTURE.md §11/§22, ADR-0002):
 
 - **Ephemeral per-suite databases.** Each suite creates `kal_it_<label>_<rand>`, applies the full migration history with the real `prisma migrate deploy` runner, and drops it (`WITH (FORCE)`) afterwards. The dev `kal` database is never touched; suites share nothing.
-- **Never assert row security as a superuser.** Superusers bypass RLS unconditionally. Every behavioral statement runs through `test/integration/helpers/acting-owner.ts`: `SET LOCAL ROLE kal_app`/`kal_platform` inside a transaction, then a `current_user` proof — the helper refuses to run otherwise. The owner context is the transaction-local GUC (`set_config('app.current_owner', <uuid>, true)`).
-- **A/B/C semantics.** A owns target rows; B attacks every read/mutate/reference/enumerate path with valid credentials; C is the control (parity proves denials are authorization-driven). Rows are seeded through the app role under each owner's context — never via admin authority.
+- **Never assert row security as a superuser.** Superusers bypass RLS unconditionally. Every behavioral statement runs through `test/integration/helpers/acting-user.ts`: `SET LOCAL ROLE kal_app`/`kal_platform` inside a transaction, then a `current_user` proof — the helper refuses to run otherwise. The user context is the transaction-local GUC (`set_config('app.user_id', <uuid>, true)`).
+- **A/B/C semantics.** A's rows are the attack targets; B attacks every read/mutate/reference/enumerate path with valid credentials; C is the control (parity proves denials are authorization-driven). Rows are seeded through the app role under each user's context — never via admin authority.
 - **Denials are row-count assertions.** RLS hides rows; exceptions are asserted only where PostgreSQL actually raises (INSERT `WITH CHECK`, missing column grants, malformed GUC casts, privilege-escalation attempts).
 - **No secrets in logs.** The migration-runner spawn is the one boundary that could echo credentials; its output is redacted against the URL and password before surfacing.
 
-Reuse for later waves: copy `rls-pilot.itspec.ts` as the reference consumer and `test/integration/helpers/*` as-is; owned child tables add the compound-ownership cases (README "Roles & row-level security").
+Reuse for later waves: copy `rls-pilot.itspec.ts` as the reference consumer and `test/integration/helpers/*` as-is; owned child tables add the compound user-reference cases (README "Roles & row-level security").
 
 ## Not wired yet (state at bootstrap)
 
@@ -159,7 +159,7 @@ PostgreSQL connection config (`.env`), environment/config validation, and all fe
 ## Repository rules (from ARCHITECTURE.md — full version there)
 
 - One module per bounded context; modules talk only through exported service interfaces — **no module queries another module's tables**.
-- Every read/write of user-owned data goes through the owning module's service layer with a validated `OwnerContext`; unscoped queries are review-blocking defects.
+- Every read/write of user-owned data goes through the owning module's service layer with a validated `UserContext`; unscoped queries are review-blocking defects.
 - Errors use RFC 9457-style problem details with stable application error codes.
 - Money is integer piastres + currency code, everywhere.
 - No imports from any other Kal repository; each client keeps its own local types.

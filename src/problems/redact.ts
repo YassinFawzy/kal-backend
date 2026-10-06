@@ -1,7 +1,7 @@
 /**
  * Kal — shared problem-details redactor (conventions.md §5).
  *
- * "A single shared redactor strips owner-existence signals, health-shaped
+ * "A single shared redactor strips user-existence signals, health-shaped
  * keys, and internal fields from every problem-details construction."
  *
  * Every module that attaches structured data anywhere near a problem-details
@@ -32,8 +32,8 @@ function containsToken(normalizedKey: string, token: string): boolean {
   return new RegExp(`(^|_)${token}(_|$)`, 'u').test(normalizedKey);
 }
 
-/** Keys whose presence signals whether another owner's object exists (I7). */
-const OWNER_EXISTENCE_TOKENS: readonly string[] = [
+/** Keys whose presence signals whether another user's object exists (I7). */
+const USER_EXISTENCE_TOKENS: readonly string[] = [
   'exists',
   'exist',
   'existed',
@@ -147,7 +147,7 @@ function isDeniedKey(key: string): boolean {
   const normalized = normalizeKey(key);
   return (
     ABSOLUTE_DENY_TOKENS.some((token) => normalized.includes(token)) ||
-    OWNER_EXISTENCE_TOKENS.some((token) => containsToken(normalized, token)) ||
+    USER_EXISTENCE_TOKENS.some((token) => containsToken(normalized, token)) ||
     HEALTH_TOKENS.some((token) => containsToken(normalized, token)) ||
     INTERNAL_TOKENS.some((token) => containsToken(normalized, token))
   );

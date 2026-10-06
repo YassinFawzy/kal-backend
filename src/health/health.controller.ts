@@ -8,10 +8,10 @@
  * - GET /probe/problem-details → the documented VALIDATION_FAILED fixture:
  *                            byte-stable (fixed correlation id unless the
  *                            client supplies its own X-Request-Id).
- * - GET /probe/owner-context   → guarded by @RequireOwnerContext; in W1 the
+ * - GET /probe/user-context    → guarded by @RequireUserContext; in W1 the
  *                            resolver refuses every request, so this is the
  *                            live fail-closed proof (I2): always 403
- *                            FORBIDDEN_OWNER, never disclosing why.
+ *                            FORBIDDEN, never disclosing why.
  *
  * The probes are contract fixtures, not debug surfaces: they carry no
  * runtime data, echo nothing about the process, and are safe in production.
@@ -20,7 +20,7 @@ import { Controller, Get, Logger } from '@nestjs/common';
 import type { Request } from 'express';
 import { KalProblemException } from '../problems/kal-problem.exception.js';
 import { redactTextForLog } from '../problems/redact.js';
-import { RequireOwnerContext } from '../request-context/owner-context.guard.js';
+import { RequireUserContext } from '../request-context/user-context.guard.js';
 import { RequestContextService } from '../request-context/request-context.service.js';
 import { ReadinessCheck, injectReadinessChecks } from './readiness.js';
 
@@ -75,12 +75,12 @@ export class ProbeController {
     });
   }
 
-  @Get('owner-context')
-  @RequireOwnerContext()
-  ownerContext(_request: Request): void {
-    // Unreachable in W1: the OwnerContextResolver refuses every request
+  @Get('user-context')
+  @RequireUserContext()
+  userContext(_request: Request): void {
+    // Unreachable in W1: the UserContextResolver refuses every request
     // (no identity plane exists yet), so the guard fails closed with 403
-    // FORBIDDEN_OWNER before this handler runs. W2 swaps the resolver and
+    // FORBIDDEN before this handler runs. W2 swaps the resolver and
     // this probe starts admitting validated contexts.
   }
 }

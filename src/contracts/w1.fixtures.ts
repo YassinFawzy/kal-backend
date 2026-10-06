@@ -110,12 +110,12 @@ export function w1FixturesDocument(): ContractFixturesDocument {
       {
         // Additive entry (conventions.md §6.1 allows additive fixture
         // evolution): the live fail-closed proof (I2) — always 403 in W1.
-        id: 'probe.owner-context',
+        id: 'probe.user-context',
         method: 'GET',
-        path: '/probe/owner-context',
+        path: '/probe/user-context',
         auth: 'none',
         responses: [
-          { status: 403, contentType: 'application/problem+json', bodySchema: ENVELOPE_SCHEMA(403, 'FORBIDDEN_OWNER') },
+          { status: 403, contentType: 'application/problem+json', bodySchema: ENVELOPE_SCHEMA(403, 'FORBIDDEN') },
         ],
       },
       {

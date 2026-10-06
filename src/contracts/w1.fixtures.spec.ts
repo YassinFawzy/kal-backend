@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { probeProblemDetailsExample, w1FixturesDocument } from './w1.fixtures.js';
 
 describe('w1 contract fixtures (conventions.md §6)', () => {
-  it('carries the four lane-owned entries plus the additive owner-context probe', () => {
+  it('carries the four lane-owned entries plus the additive user-context probe', () => {
     const endpoints = w1FixturesDocument().endpoints.map((endpoint) => endpoint.id).sort();
-    expect(endpoints).toEqual(['contracts.self', 'health.liveness', 'health.readiness', 'probe.owner-context', 'probe.problem-details']);
+    expect(endpoints).toEqual(['contracts.self', 'health.liveness', 'health.readiness', 'probe.problem-details', 'probe.user-context']);
   });
 
   it('the probe example is the pinned VALIDATION_FAILED body (byte-stable)', () => {

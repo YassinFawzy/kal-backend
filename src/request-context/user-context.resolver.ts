@@ -1,5 +1,5 @@
 /**
- * Kal — owner-context resolution seam (I2).
+ * Kal — user-context resolution seam (I2).
  *
  * W1 ships no authentication (identity lands in W2), so the default
  * resolver can never VALIDATE anything: it refuses every request as
@@ -10,20 +10,20 @@
  */
 import { Injectable } from '@nestjs/common';
 import { IncomingMessage } from 'node:http';
-import { OwnerResolution } from './owner-context.js';
+import { UserResolution } from './user-context.js';
 
 /** DI token for the resolver seam (interface — cannot be a class token). */
-export const OWNER_CONTEXT_RESOLVER = Symbol('OWNER_CONTEXT_RESOLVER');
+export const USER_CONTEXT_RESOLVER = Symbol('USER_CONTEXT_RESOLVER');
 
-export interface OwnerContextResolver {
-  resolve(request: IncomingMessage): OwnerResolution | Promise<OwnerResolution>;
+export interface UserContextResolver {
+  resolve(request: IncomingMessage): UserResolution | Promise<UserResolution>;
 }
 
 @Injectable()
-export class NoOwnerContextResolver implements OwnerContextResolver {
-  resolve(_request: IncomingMessage): OwnerResolution {
+export class NoUserContextResolver implements UserContextResolver {
+  resolve(_request: IncomingMessage): UserResolution {
     // W1: no identity plane exists — no request can present a validated
-    // owner context, so every guarded route fails closed (I2).
+    // user context, so every guarded route fails closed (I2).
     return { status: 'absent' };
   }
 }

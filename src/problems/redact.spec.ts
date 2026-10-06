@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { redactErrorEntries, redactForProblemDetails, redactTextForLog } from './redact.js';
 
 describe('redactForProblemDetails (adversarial, I7/I12)', () => {
-  it('strips owner-existence signal keys in every casing convention', () => {
+  it('strips user-existence signal keys in every casing convention', () => {
+    // The key shapes below deliberately include owner-flavored spellings:
+    // whatever a call site (or a hostile payload) calls the signal, a key
+    // carrying an existence/belongs-to token is stripped (I7) — the
+    // denylist is wording-independent by design.
     const input = {
       ownerExists: true,
       owner_exists: 1,
