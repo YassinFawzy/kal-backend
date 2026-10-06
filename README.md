@@ -39,14 +39,83 @@ pnpm test:e2e     # e2e — start `pnpm start:dev` in another terminal first
 
 ## Local database
 
-Prisma is scaffolded (config in `prisma7.config.ts`, schema at `prisma/schema.prisma` — empty by design). The **local dev database is `kal`**: an intentionally EMPTY database on the machine's local PostgreSQL (localhost:5432). Wave 1 of the delivery plan creates the schema through reviewed Prisma migrations; until then nothing creates tables.
+Prisma is configured (`prisma7.config.ts`, schema at `prisma/schema.prisma`). The **local dev database is `kal`** on the machine's local PostgreSQL (localhost:5432); it receives the schema **only through reviewed migrations** (production schema auto-sync is forbidden — `prisma db push` is never run against this database).
 
 ```bash
 cp .env.example .env          # then set your local credentials
 createdb kal                  # once, if it does not exist yet
 ```
 
-All agents and sessions target this database via `DATABASE_URL` in `.env` (never committed). Ephemeral test databases for the A/B/C security harness are created/dropped by the test harness itself (Wave 1 defines the pattern).
+All agents and sessions target this database via `DATABASE_URL` in `.env` (never committed). Ephemeral test databases for the A/B/C security harness are created/dropped by the test harness itself (the Wave 1 pattern below — see `prisma/migrations`).
+
+> Prisma 7 note: the `prisma-client` generator is adapter-based — instantiating the generated client requires a driver adapter (e.g. `@prisma/adapter-pg` wrapping `pg`). `prisma/seed.ts` shows the pattern; the dependency lands via the backend's own `package.json`.
+
+## Database migrations (workflow)
+
+Migrations are **reviewed, immutable, forward-only history** (ARCHITECTURE §11; CLAUDE.md). Schema, generated clients, fixtures, and deployment steps stay faithful to that history. **Production schema auto-sync is forbidden.**
+
+```bash
+pnpm prisma migrate dev                      # author/apply locally (dev kal); creates shadow DB, detects drift
+pnpm prisma migrate dev --create-only --name <name>   # generate SQL, review/edit BEFORE applying
+pnpm prisma migrate deploy                  # apply pending migrations only (CI/release; no shadow DB)
+pnpm prisma migrate status                  # show applied/pending state
+dropdb kal && createdb kal && pnpm prisma migrate deploy   # recovery: fresh DB ← full history (structure verified by schema-dump diff)
+```
+
+Rules:
+
+- **Never edit an applied migration.** Fix-forward with a new migration. (`prisma migrate reset --force` recreates the dev database from history — dev-only, never shared environments.)
+- **Raw SQL (roles, GRANTs, RLS policies, triggers) lives inside migrations** — never in ad hoc scripts. Prisma's generated DDL and governance SQL can share a migration only when written together before first apply; otherwise governance lands as its own migration (see `20261006082537_role_contract_assertions`).
+- **Every migration that creates a table grants its roles in the same migration.** Default privilege state is deny; nothing inherits access implicitly.
+- Roles are cluster-scoped, migrations are per-database: role creation is guarded (`DO $$ ... IF NOT EXISTS pg_roles ...`), and the `role_contract_assertions` migration then asserts the full least-privilege contract idempotently — so the same history applies cleanly to fresh databases in a cluster that already has the roles (the A/B/C harness creates ephemeral databases per test).
+- `prisma migrate dev` replays history into a shadow database for drift detection — policies/roles created by earlier migrations are recreated there identically, so they must be **re-run safe** (idempotent guards; no unguarded `CREATE ROLE`).
+- Migrations must apply cleanly to an **empty** database (harness gate) and reproduce identical structure on drop/recreate (verified by schema-dump diff).
+
+### Fresh-machine setup (exact commands)
+
+```bash
+cp .env.example .env          # set local credentials (never committed)
+createdb kal                  # once
+pnpm install
+pnpm prisma migrate deploy    # applies full history to kal
+pnpm prisma generate          # regenerates generated/prisma (gitignored — never committed)
+node prisma/seed.ts           # optional: synthetic fixtures (localhost only)
+```
+
+## Roles & row-level security (ADR-0002 pilot pattern)
+
+Wave 1 establishes the structural-isolation pattern every later wave copies:
+
+- **`kal_app`** — request-scope application role. `NOLOGIN` group role: connections assume it via `SET ROLE kal_app` (per session/transaction). Least-privilege column/table GRANTs only; subject to RLS on health tables.
+- **`kal_platform`** — platform-scope bypass role for **enumerated** cross-owner jobs (export/deletion, retention, sync housekeeping). Bypass is explicit and per-table via exemption policies (e.g. `weight_log_platform_export`/`weight_log_platform_deletion`) — **never** a superuser or `BYPASSRLS` attribute, and never reachable from request-scope code paths.
+- **`role_contract_assertions` migration** asserts both roles' full contract (`NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`) idempotently — roles can pre-exist in a cluster; the migration normalizes them regardless of provenance.
+- **Fail-closed RLS** (pilot table `weight_log`, FORCE-enabled):
+
+  ```sql
+  CREATE POLICY weight_log_owner_context ON weight_log
+    AS PERMISSIVE FOR ALL TO kal_app
+    USING (owner_id = current_setting('app.current_owner', true)::uuid)
+    WITH CHECK (owner_id = current_setting('app.current_owner', true)::uuid);
+  ```
+
+  The `app.current_owner` GUC is **transaction-local**: `SELECT set_config('app.current_owner', <owner uuid>, true)` inside the transaction that queries. Unset ⇒ NULL ⇒ **zero rows, ever**. Malformed ⇒ cast error ⇒ fail closed. Note: `set_config(..., true)` outside an explicit transaction reverts immediately (autocommit) — application code must always set it inside the transaction.
+- **Owner immutability**: `owner_id` has no UPDATE grant (column-level grants cover data columns only), and the RLS `WITH CHECK` rejects any write whose `owner_id` differs from the context — mutation of ownership is structurally impossible.
+- **Append-only audit** (`audit_events`, platform-owned, deliberately outside RLS scope): no UPDATE/DELETE grants for any role **and** a `BEFORE UPDATE/DELETE` trigger that raises — the trigger binds even the table owner; only a superuser could bypass it (break-glass territory, audited).
+- **Compound-ownership pattern for later waves (I3):** owned child tables carry `owner_id` and expose a composite key so cross-owner references are structurally impossible:
+
+  ```sql
+  -- parent: UNIQUE (id, owner_id); child:
+  CREATE TABLE child (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id uuid NOT NULL,
+    parent_id uuid NOT NULL,
+    FOREIGN KEY (parent_id, owner_id) REFERENCES parent (id, owner_id)
+  );
+  ```
+
+  (The W1 tables stand alone — no consumer table exists yet, so `weight_log.owner_id` deliberately has no FK; the identity wave documents whether pilot tables adopt the composite pattern retroactively.)
+- **Never assert RLS behavior over a superuser connection** — superusers bypass RLS unconditionally. Verification connections use `SET ROLE kal_app` / `SET ROLE kal_platform` and assert on `current_user` (proof pattern in the Wave 1 merge request evidence).
+- Introspection: `psql "$DATABASE_URL" -c '\dp weight_log' -c "SELECT * FROM pg_policies;"`.
 
 ## Not wired yet (state at bootstrap)
 
