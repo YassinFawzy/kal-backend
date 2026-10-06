@@ -1,0 +1,171 @@
+/**
+ * Kal — in-process scheduler skeleton with the idempotent-job pattern
+ * (ARCHITECTURE §6 runtime units, §9 rules of engagement).
+ *
+ * Phase 1 jobs run in-process (sync-cursor housekeeping, retention,
+ * moderation-report triage timers — they land with their waves). Two
+ * guarantees the skeleton enforces:
+ *
+ *  1. Registration is idempotent: re-registering a job name REPLACES the
+ *     definition (hot reload / restart safety) — the map never accumulates
+ *     duplicates.
+ *  2. Execution is idempotent per effect: job handlers apply side effects
+ *     through `JobRunContext.applyOnce(effectKey, fn)` — an effect key
+ *     (job name + key) executes at most once per process lifetime, so a
+ *     job that runs twice (restart, overlapping tick, manual trigger)
+ *     leaves no duplicate side effects. W1's ledger is in-process memory;
+ *     a wave that needs durable exactly-once semantics (e.g. export jobs)
+ *     moves its ledger into PostgreSQL inside the same interface.
+ *
+ * No real cron infrastructure: interval ticking is a plain
+ * `setInterval` under start()/stop() with clean teardown; concurrency
+ * within one job name is collapsed (an overlapping run is skipped, never
+ * queued — a skipped tick re-fires on the next interval).
+ */
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+
+export interface JobRunContext {
+  readonly jobName: string;
+  readonly runId: string;
+  readonly trigger: 'interval' | 'manual';
+  /**
+   * Applies `effect` at most once per (jobName, effectKey). Later calls
+   * with the same key are silently skipped (the effect already happened).
+   */
+  applyOnce(effectKey: string, effect: () => Promise<void>): Promise<void>;
+}
+
+export interface JobDefinition {
+  /** Stable job name — the idempotency scope for registration and effects. */
+  readonly name: string;
+  /** Interval in ms; omit for manually-triggered jobs. */
+  readonly intervalMs?: number;
+  readonly handler: (context: JobRunContext) => Promise<void>;
+}
+
+export type JobRunResult =
+  | { readonly outcome: 'ran'; readonly runId: string }
+  | { readonly outcome: 'skipped-in-flight'; readonly jobName: string };
+
+interface InternalJob {
+  readonly definition: JobDefinition;
+  readonly appliedEffects: Set<string>;
+  inFlight: boolean;
+  lastError?: string;
+}
+
+@Injectable()
+export class SchedulerService implements OnModuleDestroy {
+  private readonly logger = new Logger(SchedulerService.name);
+  private readonly jobs = new Map<string, InternalJob>();
+  private readonly timers = new Map<string, NodeJS.Timeout>();
+
+  /** Idempotent registration: the same name replaces its definition. */
+  register(definition: JobDefinition): void {
+    const existing = this.jobs.get(definition.name);
+    const job: InternalJob = {
+      definition,
+      appliedEffects: existing?.appliedEffects ?? new Set<string>(),
+      inFlight: false,
+    };
+    this.jobs.set(definition.name, job);
+    if (existing !== undefined) {
+      this.logger.log(`scheduler: job ${definition.name} re-registered (definition replaced)`);
+      // A running timer keeps the OLD interval; re-arm if the definition changed.
+      const timer = this.timers.get(definition.name);
+      if (timer !== undefined) {
+        clearInterval(timer);
+        this.timers.delete(definition.name);
+        this.armTimer(job);
+      }
+    }
+  }
+
+  /**
+   * Runs a job once. Concurrent invocations for the same job collapse into
+   * the in-flight run (skip, never queue — idempotency makes re-running
+   * safe, so skipping a tick loses nothing).
+   */
+  async runJob(name: string, trigger: 'interval' | 'manual' = 'manual'): Promise<JobRunResult> {
+    const job = this.jobs.get(name);
+    if (job === undefined) {
+      throw new Error(`scheduler: unknown job "${name}"`);
+    }
+    if (job.inFlight) {
+      return { outcome: 'skipped-in-flight', jobName: name };
+    }
+    job.inFlight = true;
+    const runId = randomUUID();
+    try {
+      const context: JobRunContext = {
+        jobName: name,
+        runId,
+        trigger,
+        applyOnce: async (effectKey: string, effect: () => Promise<void>): Promise<void> => {
+          const ledgerKey = `${name}\u0000${effectKey}`;
+          if (job.appliedEffects.has(ledgerKey)) {
+            return;
+          }
+          await effect();
+          job.appliedEffects.add(ledgerKey);
+        },
+      };
+      await job.definition.handler(context);
+      return { outcome: 'ran', runId };
+    } catch (error) {
+      job.lastError = error instanceof Error ? error.message : String(error);
+      // Interval-triggered failures are logged and absorbed (a job failure
+      // must not kill the process); manual callers observe the rejection.
+      if (trigger === 'interval') {
+        this.logger.warn(`scheduler: job ${name} failed — ${job.lastError}`);
+      }
+      throw error;
+    } finally {
+      job.inFlight = false;
+    }
+  }
+
+  hasJob(name: string): boolean {
+    return this.jobs.has(name);
+  }
+
+  jobNames(): string[] {
+    return [...this.jobs.keys()].sort();
+  }
+
+  lastError(name: string): string | undefined {
+    return this.jobs.get(name)?.lastError;
+  }
+
+  /** Arms interval ticking for every interval-defined job (idempotent). */
+  start(): void {
+    for (const job of this.jobs.values()) {
+      this.armTimer(job);
+    }
+  }
+
+  private armTimer(job: InternalJob): void {
+    const { name, intervalMs } = job.definition;
+    if (intervalMs === undefined || this.timers.has(name)) {
+      return;
+    }
+    const timer = setInterval(() => {
+      // Interval runs absorb failures (logged); no floating promises.
+      void this.runJob(name, 'interval').catch(() => undefined);
+    }, intervalMs);
+    timer.unref();
+    this.timers.set(name, timer);
+  }
+
+  stop(): void {
+    for (const timer of this.timers.values()) {
+      clearInterval(timer);
+    }
+    this.timers.clear();
+  }
+
+  onModuleDestroy(): void {
+    this.stop();
+  }
+}
