@@ -57,6 +57,19 @@ const COLLECTION_SCHEMA = (item: W2SchemaSubset): W2SchemaSubset => ({
   properties: { data: { items: item } },
 });
 
+/**
+ * Delta-feed envelope (note §1.6 — supervisor amendment 1, 2026-10-08): the
+ * pull response keys its page on `changes`, not the generic `data` — the
+ * note freezes `200 {"changes": [...], "nextCursor"}` twice (§1.6 + §2)
+ * and is the semantic authority over conventions §2's default collection
+ * envelope; the original `data` wrapper here was a mechanical schema reuse.
+ */
+const CHANGES_COLLECTION_SCHEMA = (item: W2SchemaSubset): W2SchemaSubset => ({
+  type: 'object',
+  required: ['changes', 'nextCursor'],
+  properties: { changes: { items: item } },
+});
+
 /** A catalog food as surfaced by search/detail (per-100 g macros; EN+AR names). */
 const FOOD_ITEM_SCHEMA: W2SchemaSubset = {
   type: 'object',
@@ -208,7 +221,8 @@ export function w3FixturesDocument(): W3ContractFixturesDocument {
         responses: [
           // The delta feed (note §1): opaque user-bound cursors (conventions
           // §2) — a foreign/expired/malformed cursor is the SAME generic 400.
-          { status: 200, contentType: 'application/json; charset=utf-8', bodySchema: COLLECTION_SCHEMA(CHANGE_ITEM_SCHEMA) },
+          // Envelope keys on `changes` per note §1.6 (amendment 1).
+          { status: 200, contentType: 'application/json; charset=utf-8', bodySchema: CHANGES_COLLECTION_SCHEMA(CHANGE_ITEM_SCHEMA) },
           { status: 400, contentType: 'application/problem+json', bodySchema: ENVELOPE_SCHEMA(400, 'VALIDATION_FAILED') },
           { status: 401, contentType: 'application/problem+json', bodySchema: ENVELOPE_SCHEMA(401, 'UNAUTHENTICATED') },
         ],

@@ -16,10 +16,12 @@ const W2_DOCUMENT_SHA256 = '3bc5e0735040551fc8dff13c52ad4119ba9b551766b930303440
 
 /**
  * w3 golden (additive evolution pin): the served w3 document as shipped by
+ * s1, amended by supervisor amendment 1 (2026-10-08: pull envelope `changes`
+ * key per note §1.6 — original hash 29be4bb4… pinned the pre-amendment doc).
  * this wave. Any later wave extending w3 additively updates this hash in the
  * same change package; a drift without a marker change fails here.
  */
-const W3_DOCUMENT_SHA256 = '29be4bb40bba0a5b7a0cbecf075fd0340d4113750ec717519632bee52a64b727';
+const W3_DOCUMENT_SHA256 = '80b2f3a74fddd346221bcb3fb2ad84eb88225ac2ce8213acc0e928f328e3cb4a';
 
 describe('w3 contract fixtures (conventions.md §6, additive over w2)', () => {
   it('carries every w1+w2 entry byte-stably, then adds exactly the w3 entries', () => {
