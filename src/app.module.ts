@@ -4,19 +4,22 @@ import { ConfigModule } from './config/config.module.js';
 import { ContractsModule } from './contracts/contracts.module.js';
 import { DbModule } from './db/db.module.js';
 import { HealthModule } from './health/health.module.js';
+import { IdentityModule } from './identity/identity.module.js';
 import { ProblemsModule } from './problems/problems.module.js';
-import { RequestContextMenu, RequestContextMiddleware } from './request-context/index.js';
+import { RequestContextMiddleware } from './request-context/index.js';
 import { SchedulerModule } from './scheduler/scheduler.module.js';
 
 /**
  * Kal API — NestJS modular monolith (ARCHITECTURE §6/§9). Phase 1 infra
- * modules only: config (I15), problem-details (I7), request/user context
- * (I2), audit (I14), scheduler, health/contracts fixtures.
+ * modules plus the W2 identity module, which re-exports the request-context
+ * plumbing and overrides `USER_CONTEXT_RESOLVER` with the JWT-backed
+ * resolver (I2 — see identity.module.ts); hosting authenticated routes
+ * means importing IdentityModule.
  */
 @Module({
   imports: [
     ConfigModule,
-    RequestContextMenu,
+    IdentityModule,
     ProblemsModule,
     DbModule,
     AuditModule,
