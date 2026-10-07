@@ -177,7 +177,9 @@ model Session {
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  /// Absolute session expiry (no sliding window — contract note §1).
+  /// Session expiry, sliding on refresh (founder CR 2026-10-07): each
+  /// successful refresh re-arms expiresAt = now + sessionTtlSeconds — active
+  /// users are never logged out by the timer; only full-TTL inactivity expires.
   expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
 
   /// Set on explicit revocation or refresh-chain-reuse revocation.

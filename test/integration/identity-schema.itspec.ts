@@ -169,7 +169,9 @@ describe('user binding is immutable (I1/I3)', () => {
       { table_name: 'recovery_tickets', column_name: 'user_id', updatable: false },
       { table_name: 'sessions', column_name: 'created_at', updatable: false },
       { table_name: 'sessions', column_name: 'device_label', updatable: false },
-      { table_name: 'sessions', column_name: 'expires_at', updatable: false },
+      // Sliding window (founder CR 2026-10-07): rotation re-arms expires_at —
+      // granted additively in migration 20261007211822.
+      { table_name: 'sessions', column_name: 'expires_at', updatable: true },
       { table_name: 'sessions', column_name: 'id', updatable: false },
       { table_name: 'sessions', column_name: 'revoked_at', updatable: true },
       { table_name: 'sessions', column_name: 'user_id', updatable: false },

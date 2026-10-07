@@ -776,7 +776,7 @@ describe('token lifecycle (contract §1)', () => {
       expect(after.status, 'past the TTL').toBe(401);
       const neverValid = await pin(request(shortTtl.getHttpServer()).get('/identity/me')).set(bearer('garbage-token'));
       expectRawIdentical(after, neverValid, 'expired vs never-valid');
-      // The session itself is NOT expired (30-day absolute lifetime): the refresh token still rotates.
+      // The session itself is NOT expired (30-day inactivity TTL, sliding): the refresh token still rotates.
       const refresh = await request(shortTtl.getHttpServer()).post('/identity/token/refresh').set(bearer(pair.refreshToken)).send();
       expect(refresh.status, 'expired ACCESS token ≠ expired SESSION — refresh still works').toBe(200);
     } finally {
@@ -804,7 +804,7 @@ describe('token lifecycle (contract §1)', () => {
     expectRawIdentical(dead, garbage, 'revoked vs never-valid (raw)');
   });
 
-  it('rotation chain A→B→C on one session: absolute expiresAt preserved; reusing the OLDEST token revokes the chain — every descendant dead; theft audited (I14)', async () => {
+  it('rotation chain A→B→C on one session: expiresAt slides on each refresh; reusing the OLDEST token revokes the chain — every descendant dead; theft audited (I14)', async () => {
     const first = await signinPair(app, ACC_REC.email, freshDevice('chain'), PASSWORD);
     const secondResponse = await request(app.getHttpServer()).post('/identity/token/refresh').set(bearer(first.refreshToken)).send();
     expect(secondResponse.status).toBe(200);
@@ -816,7 +816,9 @@ describe('token lifecycle (contract §1)', () => {
     expect(second.refreshToken).not.toBe(first.refreshToken);
     expect(third.refreshToken).not.toBe(second.refreshToken);
     // Absolute session lifetime: the session bookkeeping never slides.
-    expect(third.session.expiresAt).toBe(first.session.expiresAt);
+    // Sliding window (founder CR): each rotation extends the expiry — active
+    // users are never logged out by the timer; inactivity still expires.
+    expect(Date.parse(third.session.expiresAt)).toBeGreaterThan(Date.parse(first.session.expiresAt));
     expect(third.session.id).toBe(first.session.id);
 
     // REUSE of the oldest (superseded) token: theft signal.
@@ -899,10 +901,10 @@ describe('token lifecycle (contract §1)', () => {
     expect((await request(app.getHttpServer()).get('/identity/me').set(bearer(pair.accessToken))).status).toBe(200);
   });
 
-  it('refresh from an EXPIRED session is the generic 401 (absolute lifetime; no sliding window)', async () => {
+  it('refresh from an EXPIRED session is the generic 401 (inactivity expiry — sliding re-arm happens only on successful refresh)', async () => {
     const pair = await signinPair(app, ACC_A.email, freshDevice('expired-session'), PASSWORD);
-    // The schema CHECK pins expires_at > created_at (absolute lifetime is
-    // structural) — shift BOTH instants into the past (admin/fixture seeding).
+    // The schema CHECK pins expires_at > created_at; a session fully inactive
+    // for the TTL still dies — shift BOTH instants into the past (admin seeding).
     await db.pool.query(
       "UPDATE sessions SET created_at = now() - interval '40 days', expires_at = now() - interval '10 days' WHERE id = $1",
       [pair.session.id],

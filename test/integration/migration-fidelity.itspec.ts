@@ -29,6 +29,7 @@ const EXPECTED_MIGRATIONS = [
   // stay truthful as it grows).
   '20261007101836_identity_core',
   '20261007205611_rename_password_hash_to_password',
+  '20261007211822_sessions_sliding_window_expires_at_grant',
 ] as const;
 
 let db: EphemeralKalDb;

@@ -341,10 +341,14 @@ export class IdentityService {
     if (this.tokens.digestsMatch(bearerToken, current.refreshTokenHash)) {
       const nextRefresh = this.tokens.mintRefreshToken(sessionId);
       const nextHash = this.tokens.refreshDigest(nextRefresh);
+      // Sliding window (founder CR, 2026-10-07): every successful refresh
+      // re-arms the session lifetime — an active user is never logged out by
+      // the timer. Only inactivity for the full TTL expires the session.
+      const slidingExpiry = new Date(Date.now() + this.config.values.sessionTtlSeconds * 1000);
       const rotated = await this.inAppRoleTx(async (tx) =>
         tx.session.updateMany({
           where: { id: sessionId, refreshTokenHash: current.refreshTokenHash, revokedAt: null },
-          data: { refreshTokenHash: nextHash, refreshGeneration: { increment: 1 }, lastRefreshedAt: new Date() },
+          data: { refreshTokenHash: nextHash, refreshGeneration: { increment: 1 }, lastRefreshedAt: new Date(), expiresAt: slidingExpiry },
         }),
       );
       if (rotated.count === 1) {
@@ -362,7 +366,7 @@ export class IdentityService {
             id: sessionId,
             deviceLabel: current.deviceLabel,
             createdAt: current.createdAt.toISOString(),
-            expiresAt: current.expiresAt.toISOString(),
+            expiresAt: slidingExpiry.toISOString(),
           },
         };
       }

@@ -657,7 +657,8 @@ describe('refresh rotation and reuse (identity.token.refresh)', () => {
     expect(next.refreshToken).not.toBe(pair.refreshToken);
     expect(next.accessToken).not.toBe(pair.accessToken);
     expect(next.session.id).toBe(pair.session.id);
-    expect(next.session.expiresAt).toBe(pair.session.expiresAt); // absolute lifetime
+    // Sliding window (founder CR): a successful refresh re-arms the expiry.
+    expect(Date.parse(next.session.expiresAt)).toBeGreaterThan(Date.parse(pair.session.expiresAt));
     expect(next.session.createdAt).toBe(pair.session.createdAt);
 
     // The new pair works; the rotation is recorded.
