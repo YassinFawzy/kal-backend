@@ -18,8 +18,8 @@
 //     never as ad hoc scripts (ADR-0002 §4).
 
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider            = "prisma-client"
+  output              = "../generated/prisma"
   // ESM imports with explicit .ts extensions so the seed scaffold (and any
   // script) can run under Node's built-in TypeScript type stripping — no
   // extra tooling needed. Application code imports are unaffected.
@@ -92,6 +92,13 @@ model WeightLog {
   /// timestamped weight entries per user, input to trend smoothing).
   weightKg Decimal @map("weight_kg") @db.Decimal(5, 2)
 
+  /// W3 Stage-1 carryover (G2 evidence §6-E): the retroactive user FK the W1
+  /// pilot deliberately omitted (no consumer table existed then). Plain FK —
+  /// weight_log is an owned ROOT table with no children, so the compound
+  /// (id, user_id) pattern has no structural target here; ON DELETE RESTRICT
+  /// makes account deletion an explicit job that removes children itself.
+  user User @relation(fields: [userId], references: [id])
+
   @@index([userId, recordedAt])
   @@map("weight_log")
 }
@@ -150,8 +157,16 @@ model User {
   /// immutable (I1).
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  sessions Session[]
-  recoveryTickets RecoveryTicket[]
+  sessions              Session[]
+  recoveryTickets       RecoveryTicket[]
+  weightLogs            WeightLog[]
+  userFoods             UserFood[]
+  diaryEntries          DiaryEntry[]
+  diaryDays             DiaryDay[]
+  favorites             Favorite[]
+  syncOperations        SyncOperation[]
+  syncIdempotencyKeys   SyncIdempotencyKey[]
+  userFoodCreateCounter UserFoodCreateCounter?
 
   @@map("users")
 }
@@ -186,7 +201,7 @@ model Session {
   revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
 
   /// SHA-256 hex of the current opaque refresh token (rotates on use).
-  refreshTokenHash String @map("refresh_token_hash") @unique @db.Text
+  refreshTokenHash String @unique @map("refresh_token_hash") @db.Text
 
   /// Increments on every refresh rotation; presenting a superseded
   /// generation revokes the chain (contract note §1).
@@ -215,7 +230,7 @@ model RecoveryTicket {
   userId String @map("user_id") @db.Uuid
 
   /// SHA-256 hex of the single-use ticket secret — never the secret itself.
-  tokenHash String @map("token_hash") @unique @db.Text
+  tokenHash String @unique @map("token_hash") @db.Text
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -250,7 +265,7 @@ model AuthAttemptCounter {
   failedCount Int @default(0) @map("failed_count") @db.Integer
 
   firstFailedAt DateTime @default(now()) @map("first_failed_at") @db.Timestamptz(6)
-  lastFailedAt DateTime @default(now()) @map("last_failed_at") @db.Timestamptz(6)
+  lastFailedAt  DateTime @default(now()) @map("last_failed_at") @db.Timestamptz(6)
 
   /// Set while the (identifier, device) pair is locked; NULL otherwise.
   lockedUntil DateTime? @map("locked_until") @db.Timestamptz(6)
@@ -259,23 +274,553 @@ model AuthAttemptCounter {
   @@map("auth_attempt_counters")
 }
 
+/// Platform-owned recovery-request throttle state (W3 Stage-1 carryover
+/// F-S4-1 — G2 evidence §6-B/E, ledger §7-E4: the recovery-request surface
+/// was accepted at G2 as unthrottled with a W3 config-point throttle). Same
+/// digest-keyed shape as auth_attempt_counters: keyed by SERVER-KEYED
+/// DIGESTS of the submitted identifier and the X-Device-Id header — never by
+/// user_id (counters tick regardless of identifier existence, so the
+/// throttle cannot become an existence oracle). Platform abuse-control
+/// state, not user-owned data — RLS DECLINED (contract note §5).
+/// Counts RECOVERY REQUESTS (a volume cap on ticket issuance/supersession),
+/// fully separate from the credential-failure lockout rows above: two abuse
+/// domains must never write each other's state.
+model RecoveryRequestCounter {
+  /// Server-keyed digest of the canonicalized submitted identifier.
+  subjectKey String @map("subject_key") @db.Text
+
+  /// Server-keyed digest of the client X-Device-Id header value.
+  deviceKey String @map("device_key") @db.Text
+
+  /// Requests counted inside the current window (resets when the window or
+  /// lock expires — the auth_attempt_counters fresh-window semantics).
+  requestCount Int @default(0) @map("request_count") @db.Integer
+
+  /// Start of the current counting window.
+  windowStartedAt DateTime @default(now()) @map("window_started_at") @db.Timestamptz(6)
+
+  /// Set when the window count crosses the configured threshold; NULL
+  /// otherwise. While set, every request on the pair is rejected 429.
+  lockedUntil DateTime? @map("locked_until") @db.Timestamptz(6)
+
+  @@id([subjectKey, deviceKey])
+  @@map("recovery_request_counters")
+}
+
+// ---------------------------------------------------------------------------
+// Tracking & sync (Wave 3 — lane w03-s1-schema; contract:
+// docs/api/wave-03-contract.md). Platform catalog tables (foods, serving
+// variants, barcode product cache) are NOT user-scoped — RLS DECLINED
+// (per-table rationale in the contract note §5). User-owned health tables
+// (user_foods + servings; diary entries/days + favorites in the next section;
+// the sync op ledger mirrors diary payloads) ADOPT the fail-closed
+// `app.user_id` RLS policy exactly per the weight_log pilot pattern.
+// Per-table decisions are documented, never implied (ADR-0002).
+// ---------------------------------------------------------------------------
+
+/// Platform food catalog (PRD §21 "Food item", FR-010/FR-011). One row per
+/// curated/imported food. NOT a consumer-health table and NOT user-scoped:
+/// every authenticated consumer reads the same governed catalog — RLS is
+/// DECLINED (contract note §5); isolation is irrelevant to row filtering here
+/// (there is no user_id column at all).
+///
+/// `licensePartition` keeps Open Food Facts (ODbL) rows in an explicit
+/// license-separated partition from proprietary (Kal-reviewed) rows
+/// (ARCHITECTURE §19). Provenance tiers are FR-011's data basis
+/// (kal_reviewed | imported | vendor_declared — the vendor tier is Phase 3
+/// reserved; user-created foods live in UserFood, never here).
+///
+/// Search is served from the STORED normalized forms (name_en_normalized /
+/// name_ar_normalized / aliases_normalized), written by the owning write path
+/// using exactly the frozen normalization pipeline (contract note §7) — the
+/// query is normalized once and matched against these columns; the database
+/// never re-derives normalized forms.
+model Food {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Catalog type (PRD §21). CHECK-pinned in the migration:
+  /// dish | staple | packaged | recipe. `vendor_meal` is the Phase 3 reserved
+  /// boundary (ARCHITECTURE §23 — added only by a future migration);
+  /// `user_custom` never appears here (that is UserFood).
+  type String @db.Text
+
+  /// Provenance tier displayed at selection time (FR-011). CHECK-pinned:
+  /// kal_reviewed | imported | vendor_declared.
+  provenance String @db.Text
+
+  /// License partition (§19): proprietary (Kal's own) | odbl (Open Food
+  /// Facts import — attribution obligations travel with the row).
+  licensePartition String @map("license_partition") @db.Text
+
+  /// Display names (English required — consumer UI is EN-first; Arabic is
+  /// the co-equal search target). Raw forms as authored; the normalized
+  /// columns below are the frozen-pipeline projections.
+  nameEn           String  @map("name_en") @db.Text
+  nameAr           String? @map("name_ar") @db.Text
+  nameEnNormalized String  @map("name_en_normalized") @db.Text
+  nameArNormalized String? @map("name_ar_normalized") @db.Text
+
+  /// Dialect/transliteration aliases (raw + normalized), e.g. taameya for
+  /// طعمية. Matched by the same frozen matching model (note §7).
+  aliases           String[]
+  aliasesNormalized String[] @map("aliases_normalized")
+
+  /// EAN/UPC barcode where the food is a packaged product (unique where
+  /// present — the platform product cache resolves into this row).
+  barcode String? @unique @db.Text
+
+  /// Per-100 g nutrition (HD-12: values verified in-house; platform rows in
+  /// W3 are engineering-initial pending founder nutrition review — contract
+  /// note §8). Grams carry 3 decimals, energy 2.
+  energyKcal Decimal @map("energy_kcal") @db.Decimal(9, 2)
+  proteinG   Decimal @map("protein_g") @db.Decimal(9, 3)
+  carbsG     Decimal @map("carbs_g") @db.Decimal(9, 3)
+  fatG       Decimal @map("fat_g") @db.Decimal(9, 3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  servingVariants     ServingVariant[]
+  barcodeCacheEntries BarcodeProductCache[]
+  diaryEntries        DiaryEntry[]
+  favorites           Favorite[]
+
+  @@index([nameArNormalized])
+  @@index([nameEnNormalized])
+  @@map("foods")
+}
+
+/// Portion descriptor with gram weight for a platform food (PRD §21
+/// "Serving variant", FR-012: the chosen serving variant must resolve to a
+/// gram weight). Platform-owned catalog child — RLS DECLINED (parent foods
+/// declined; not user-scoped data).
+model ServingVariant {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  foodId String @map("food_id") @db.Uuid
+
+  /// Display labels (EN required, AR co-equal — bilingual from first commit
+  /// applies to data served to the UI as well).
+  labelEn String  @map("label_en") @db.Text
+  labelAr String? @map("label_ar") @db.Text
+
+  /// Gram weight of one unit of this variant (the FR-012 resolution target).
+  grams Decimal @map("grams") @db.Decimal(9, 3)
+
+  /// The portion sheet's preselected variant (one per food, CHECK-pinned
+  /// in the migration via a partial unique index).
+  isDefault Boolean @default(false) @map("is_default")
+
+  food Food @relation(fields: [foodId], references: [id])
+
+  @@index([foodId])
+  @@map("serving_variants")
+}
+
+/// Platform barcode-resolution cache (FR-017 pipeline step 2: local client
+/// cache → THIS platform product cache → Open Food Facts seam → guided
+/// label-create). Platform-owned, not user-scoped — RLS DECLINED. Rows are
+/// written once per barcode (first resolution wins; `ON CONFLICT DO NOTHING`)
+/// and carry the adapter's normalized snapshot plus the resolved catalog row
+/// when the barcode maps onto a packaged `foods` row.
+model BarcodeProductCache {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// The scanned EAN/UPC string (digits; CHECK-pinned 8–14 chars).
+  barcode String @unique @db.Text
+
+  /// Which seam resolved it: `open_food_facts` (the plan-named source behind
+  /// its adapter seam — attribution rides in payload) or `platform`.
+  source String @db.Text
+
+  /// Resolved catalog food when the barcode maps onto a `foods` row.
+  foodId String? @map("food_id") @db.Uuid
+
+  /// Adapter snapshot (attribution + normalized nutrition fields). Never a
+  /// raw provider response dump; contains no user data.
+  payload Json?
+
+  fetchedAt DateTime @default(now()) @map("fetched_at") @db.Timestamptz(6)
+
+  /// RESTRICT (never SET NULL): platform foods are not deleted in W3, and if
+  /// deletion ever becomes a job it must resolve its cache children itself
+  /// (contract: FKs ON DELETE RESTRICT everywhere).
+  food Food? @relation(fields: [foodId], references: [id], onDelete: Restrict)
+
+  @@map("barcode_product_cache")
+}
+
+/// User-created custom food (FR-017 guided label-create; PRD §21 "user
+/// custom" type). Consumer-owned HEALTH table — RLS ADOPTED, fail-closed
+/// (`app.user_id` policy, weight_log pilot pattern).
+///
+/// The `id` is the client-generated entity id (offline creation, ADR-0004):
+/// stable IDs enable dedupe only — the user binding is re-verified on every
+/// sync replay (I6). Tombstones are soft (`deletedAt`); a deleted id is never
+/// resurrected (no-resurrection rule, contract note §1).
+model UserFood {
+  /// Client-generated entity id (UUID) — the sync op's entityId.
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Immutable owning-consumer id (I1). No UPDATE grant; compound-FK target
+  /// for children via @@unique([id, userId]) (I3).
+  userId String @map("user_id") @db.Uuid
+
+  /// Display names — at least one of the two (CHECK-pinned).
+  nameEn           String? @map("name_en") @db.Text
+  nameAr           String? @map("name_ar") @db.Text
+  nameEnNormalized String? @map("name_en_normalized") @db.Text
+  nameArNormalized String? @map("name_ar_normalized") @db.Text
+
+  /// Per-100 g nutrition as entered/verified by the user (label-create
+  /// guided flow). Provenance is fixed `user_created` (FR-011) — enforced by
+  /// the write path; no column, so it can never drift.
+  energyKcal Decimal @map("energy_kcal") @db.Decimal(9, 2)
+  proteinG   Decimal @map("protein_g") @db.Decimal(9, 3)
+  carbsG     Decimal @map("carbs_g") @db.Decimal(9, 3)
+  fatG       Decimal @map("fat_g") @db.Decimal(9, 3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// Client-authored LWW timestamp (the winning op's clientUpdatedAt) — the
+  /// last-write-wins substrate, NOT server clock (contract note §1).
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  /// Tombstone (soft delete; ADR-0004). Set by delete ops; never cleared —
+  /// a fresh entity id after a delete is a NEW food (note §1).
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  /// The client op id whose application last won this row (the LWW
+  /// deterministic tiebreak comparator). NULL for REST-created rows — any
+  /// sync op then wins (note §1).
+  lastOpId String? @map("last_op_id") @db.Uuid
+
+  user         User              @relation(fields: [userId], references: [id])
+  servings     UserFoodServing[]
+  diaryEntries DiaryEntry[]
+  favorites    Favorite[]
+
+  @@unique([id, userId])
+  @@index([userId, updatedAt])
+  @@map("user_foods")
+}
+
+/// Serving variant of a user-created food (portion descriptor with gram
+/// weight). Consumer-owned health child — RLS ADOPTED. The compound user
+/// reference (I3): (user_food_id, user_id) → user_foods(id, user_id) makes a
+/// cross-account serving variant structurally impossible.
+model UserFoodServing {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  userFoodId String @map("user_food_id") @db.Uuid
+  userId     String @map("user_id") @db.Uuid
+
+  labelEn String? @map("label_en") @db.Text
+  labelAr String? @map("label_ar") @db.Text
+  grams   Decimal @map("grams") @db.Decimal(9, 3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// Soft-deleted when an update op replaces the serving set.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  /// Compound user reference (I3) — never crosses accounts, structurally.
+  userFood UserFood @relation(fields: [userFoodId, userId], references: [id, userId])
+
+  @@index([userFoodId])
+  @@map("user_food_servings")
+}
+
+/// Per-account user-food creation volume (the PRD §8 rate-limit substrate:
+/// ≤20/hour, ≤100/day — config points, shared by the REST and sync-apply
+/// paths). Platform-owned abuse-control state (ARCHITECTURE §11 places
+/// rate-limit counters on the platform plane) — RLS DECLINED: it is not
+/// user-owned data (the account has no self-service interest in its own
+/// abuse counters; only the owning account's context can ever touch its
+/// row). Rolling windows; one row per account.
+model UserFoodCreateCounter {
+  /// The counted account (the limiter only ever runs for an authenticated
+  /// context — no digest indirection needed, unlike auth_attempt_counters).
+  userId String @id @map("user_id") @db.Uuid
+
+  /// Rolling hour window (start of the window = first tick in it) + count.
+  hourWindowStart DateTime @map("hour_window_start") @db.Timestamptz(6)
+  hourCount       Int      @default(0) @map("hour_count") @db.Integer
+
+  /// Rolling 24 h window + count.
+  dayWindowStart DateTime @map("day_window_start") @db.Timestamptz(6)
+  dayCount       Int      @default(0) @map("day_count") @db.Integer
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("user_food_create_counters")
+}
+
+// ---------------------------------------------------------------------------
+// Diary & sync (Wave 3 — lane w03-s1-schema; contract:
+// docs/api/wave-03-contract.md). ALL consumer-owned health tables here ADOPT
+// the fail-closed `app.user_id` RLS policy (weight_log pilot pattern);
+// `sync_idempotency_keys` is the one DECLINE (metadata only — rationale in
+// the contract note §5). Diary mutations exist ONLY as sync operations —
+// there is no diary REST mutation surface by design (note §1).
+// ---------------------------------------------------------------------------
+
+/// One diary entry (PRD §21, FR-012, I11). Created exclusively by sync
+/// ingestion — the `id` is the client-generated entity id (offline creation;
+/// dedupe only, never authorization — I6). The nutrient snapshot (macros +
+/// resolved serving gram weight + quantity) is FROZEN at log time: later
+/// catalog corrections never rewrite logged history (I11). The client-local
+/// diary date (`local_date`) is carried in the op and is authoritative — the
+/// server NEVER re-derives the day from receive/sync time (day-boundary rule,
+/// note §1; 23:59 log / 00:01 sync stays on the original local day).
+model DiaryEntry {
+  /// Client-generated entity id (UUID) — the sync op's entityId.
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Immutable owning-consumer id (I1); compound-FK target via
+  /// @@unique([id, userId]) (I3 — no W3 child references it yet; the
+  /// pattern stands ready).
+  userId String @map("user_id") @db.Uuid
+
+  /// Client-local diary date (YYYY-MM-DD semantics via DATE column). The
+  /// authoritative day — never derived server-side.
+  localDate DateTime @map("local_date") @db.Date
+
+  /// Meal slot: breakfast | lunch | dinner | snack (CHECK-pinned; Ramadan
+  /// slots deliberately absent — HD-17, deferred beyond launch).
+  mealSlot String @map("meal_slot") @db.Text
+
+  /// How the entry was logged: search | recents | favorites |
+  /// copy_yesterday | quick_add | barcode (CHECK-pinned).
+  entryMethod String @map("entry_method") @db.Text
+
+  /// Log source — exactly one of: platform food, user food, or quick-add
+  /// (bare kcal/macros; no food reference). CHECK-pinned XOR in the
+  /// migration. The user-food side carries the compound user reference (I3).
+  foodId     String? @map("food_id") @db.Uuid
+  userFoodId String? @map("user_food_id") @db.Uuid
+
+  /// Frozen-at-log-time snapshot (I11). `quantity` × `servingGramWeight`
+  /// reconstructs the logged amount; macros are the values used at log time
+  /// — never retroactively rewritten by catalog edits. quick-add entries
+  /// carry NULL serving fields (CHECK-pinned) and the bare macros.
+  quantity          Decimal  @map("quantity") @db.Decimal(9, 3)
+  servingLabelEn    String?  @map("serving_label_en") @db.Text
+  servingLabelAr    String?  @map("serving_label_ar") @db.Text
+  servingGramWeight Decimal? @map("serving_gram_weight") @db.Decimal(9, 3)
+  energyKcal        Decimal  @map("energy_kcal") @db.Decimal(9, 2)
+  proteinG          Decimal  @map("protein_g") @db.Decimal(9, 3)
+  carbsG            Decimal  @map("carbs_g") @db.Decimal(9, 3)
+  fatG              Decimal  @map("fat_g") @db.Decimal(9, 3)
+
+  /// confirmed | edited (CHECK-pinned). `pending_order` is the Phase 3
+  /// reserved boundary (FR-014 — added only by a future migration).
+  status String @default("confirmed") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// Client-authored LWW timestamp (winning op's clientUpdatedAt).
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  /// Tombstone (soft delete). Set by delete ops; never cleared.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  /// Winning op id — the LWW deterministic tiebreak comparator.
+  lastOpId String? @map("last_op_id") @db.Uuid
+
+  user     User      @relation(fields: [userId], references: [id])
+  food     Food?     @relation(fields: [foodId], references: [id], onDelete: Restrict)
+  userFood UserFood? @relation(fields: [userFoodId, userId], references: [id, userId], onDelete: Restrict)
+
+  @@unique([id, userId])
+  @@index([userId, localDate])
+  @@index([userId, updatedAt])
+  @@map("diary_entries")
+}
+
+/// Cached per-day rollups (PRD §21 "Diary day"). Computed by the diary
+/// handlers from the user's own entries; the W5 goals lane joins the target
+/// snapshot for that day's comparison (W3 shows totals only — ledger §7-E3).
+/// Consumer-owned health table — RLS ADOPTED.
+model DiaryDay {
+  /// Immutable owning-consumer id (I1) — composite PK part.
+  userId String @map("user_id") @db.Uuid
+
+  /// The client-local diary date (composite PK part; same day-boundary rule
+  /// as entries — never derived server-side).
+  localDate DateTime @map("local_date") @db.Date
+
+  /// Cached rollups over that day's non-deleted entries.
+  energyKcal Decimal @default(0) @map("energy_kcal") @db.Decimal(12, 2)
+  proteinG   Decimal @default(0) @map("protein_g") @db.Decimal(12, 3)
+  carbsG     Decimal @default(0) @map("carbs_g") @db.Decimal(12, 3)
+  fatG       Decimal @default(0) @map("fat_g") @db.Decimal(12, 3)
+  entryCount Int     @default(0) @map("entry_count") @db.Integer
+
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@id([userId, localDate])
+  @@map("diary_days")
+}
+
+/// A favorited loggable food (quick re-log; FR-018). Consumer-owned health
+/// table — RLS ADOPTED. Exactly one target: a platform food OR the user's
+/// own food (CHECK-pinned XOR; the user-food side carries the compound user
+/// reference, I3). Favorites are created/removed exclusively via sync ops.
+model Favorite {
+  /// Client-generated entity id (UUID) — the sync op's entityId.
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Immutable owning-consumer id (I1).
+  userId String @map("user_id") @db.Uuid
+
+  foodId     String? @map("food_id") @db.Uuid
+  userFoodId String? @map("user_food_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// Client-authored LWW timestamp (winning op's clientUpdatedAt).
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  /// Tombstone (soft delete; never cleared — a re-favorite is a NEW entity
+  /// id; the partial uniqueness below applies to ACTIVE rows only).
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  /// Winning op id — the LWW deterministic tiebreak comparator.
+  lastOpId String? @map("last_op_id") @db.Uuid
+
+  user     User      @relation(fields: [userId], references: [id])
+  food     Food?     @relation(fields: [foodId], references: [id], onDelete: Restrict)
+  userFood UserFood? @relation(fields: [userFoodId, userId], references: [id, userId], onDelete: Restrict)
+
+  @@unique([id, userId])
+  @@index([userId, updatedAt])
+  @@map("favorites")
+}
+
+/// The server-side sync operation ledger (PRD §21 "Sync operation";
+/// ARCHITECTURE §12). One row per INGESTED operation keyed by the unique
+/// pair (user_id, client_op_id) — the dedupe key (I9): replays are detected
+/// and acknowledged, never re-applied; B replaying A's op id never matches
+/// (the user binding is part of the key and re-verified — I6).
+///
+/// RLS ADOPTED: `payload` mirrors diary/user-food entity content — a leak is
+/// exactly as catastrophic as the entity tables themselves (ADR-0002 scope:
+/// "the tables where a leak is catastrophic"); a context-less or wrong-GUC
+/// query sees zero rows. Platform retention/exemption policies ship WITH the
+/// first enumerated platform job — none exists in W3 (ledger §6), so no
+/// platform grants/policies land this wave (grants without policies would be
+/// inert noise).
+model SyncOperation {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Immutable owning-consumer id (I1) — part of the dedupe key.
+  userId String @map("user_id") @db.Uuid
+
+  /// Stable client-generated operation id (UUID) — dedupe only (I6).
+  clientOpId String @map("client_op_id") @db.Uuid
+
+  /// The pushing device's stable, client-generated opaque identifier
+  /// (≤ 128 chars, CHECK-pinned). Ordering metadata, never a credential.
+  deviceId String @map("device_id") @db.Text
+
+  /// Entity-kind registry (frozen, note §1): diary_entry | user_food |
+  /// favorite. CHECK-pinned.
+  entityKind String @map("entity_kind") @db.Text
+
+  /// create | update | delete (CHECK-pinned).
+  entityAction String @map("entity_action") @db.Text
+
+  /// The target entity's client-generated id.
+  entityId String @map("entity_id") @db.Uuid
+
+  /// Client-local diary date — REQUIRED on diary_entry ops, ABSENT otherwise
+  /// (CHECK-pinned). The day-boundary rule rides here (note §1).
+  localDate DateTime? @map("local_date") @db.Date
+
+  /// Client-authored LWW timestamp (ISO 8601 UTC instants only).
+  clientUpdatedAt DateTime @map("client_updated_at") @db.Timestamptz(6)
+
+  /// Full entity snapshot for create/update; NULL for delete (CHECK-pinned
+  /// parity). The ack envelope NEVER echoes payloads (note §1).
+  payload Json?
+
+  /// Recorded outcome: applied | rejected (CHECK-pinned). `duplicate` is the
+  /// REPLAY outcome of an applied row — derived, never stored.
+  outcome String @db.Text
+
+  /// For rejected ops: the frozen per-op rejection code (note §1):
+  /// rejected_validation | rejected_rate_limited | rejected_conflict |
+  /// rejected_deleted. Present iff outcome = rejected (CHECK-pinned).
+  rejectionCode String? @map("rejection_code") @db.Text
+
+  /// Present iff outcome = rejected (CHECK-pinned): whether the client may
+  /// retry the op unchanged after a delay (only `rejected_rate_limited` is
+  /// retryable).
+  retryable Boolean?
+
+  appliedAt DateTime @default(now()) @map("applied_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  /// The dedupe key (I9) — replays never re-apply.
+  @@unique([userId, clientOpId])
+  @@index([userId, entityKind, entityId])
+  @@map("sync_operations")
+}
+
+/// Batch-level `Idempotency-Key` records (conventions §3: required on sync
+/// ingestion; same key + same payload replays the recorded response; same key
+/// + different payload ⇒ 409 CONFLICT). Owned child of users (I1), but the
+/// content is METADATA ONLY (request digest + the recorded ack envelope —
+/// acks never carry entity payloads), so it is not a health table: RLS
+/// DECLINED, same I1–I3 posture as sessions (contract note §5).
+model SyncIdempotencyKey {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Immutable owning-consumer id (I1); part of the uniqueness key.
+  userId String @map("user_id") @db.Uuid
+
+  /// The endpoint the key scopes to (conventions §3: (user, endpoint, key)).
+  endpoint String @db.Text
+
+  /// Client-generated UUID (conventions §3 header value; UUID column).
+  idempotencyKey String @map("idempotency_key") @db.Uuid
+
+  /// SHA-256 hex of the canonical request body — the changed-payload
+  /// detector (same key + different digest ⇒ 409 CONFLICT).
+  requestDigest String @map("request_digest") @db.Text
+
+  /// The recorded original outcome (status + ack envelope body) — replayed
+  /// byte-identically while the key is retained.
+  responseStatus Int  @map("response_status") @db.Integer
+  responseBody   Json @map("response_body")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, endpoint, idempotencyKey])
+  @@index([userId, createdAt])
+  @@map("sync_idempotency_keys")
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1 domain sections — RESERVED (tables land with their wave; do not
 // build early). Order follows ARCHITECTURE §9 module map / PLAN.md §4.
 // ---------------------------------------------------------------------------
 
 // consent    (W5)  — per-purpose consent records with grant/withdrawal history
-// tracking   (W3)  — foods, serving variants, diary entries (frozen nutrient
-//                    snapshots, I11), diary days
 // journal    (W4)  — exercise catalog, workout sessions, routines, PRs
 // goals      (W5)  — goal setup, versioned target profiles/snapshots,
 //                    trend/streak inputs (weight_log above is its health table;
-//                    its retroactive user_id FK decision is documented in
-//                    docs/api/wave-02-contract.md §5 — deferred to W3)
+//                    its retroactive user_id FK lands with this wave — W3
+//                    Stage-1 carryover, ledger §7)
 // community  (W6)  — UGC meal-prep/recipe posts, engagement, moderation states
 // content    (W7)  — Kal-curated meal ideas, review workflow, revisions
-// sync       (W3)  — client-op ledger (dedupe on user + client op ID),
-//                    per-user opaque cursors, tombstones
 // lifecycle  (W6)  — export/deletion jobs, retention-exception records
 // notifications (W5) — per-purpose dispatch records, idempotency keys
 // analytics  (later W) — frozen-metric event tables (no health data, I12)

@@ -173,7 +173,9 @@ describe('recovery issuance mirror — F-S4-1b (clean deployment, canonical sent
     const url = new URL(process.env['DATABASE_URL'] as string);
     url.pathname = `/${db.name}`;
     databaseUrl = url.toString();
-    app = await bootApp({ DATABASE_URL: databaseUrl, IDENTITY_JWT_SIGNING_KEY: SIGNING_KEY, NODE_ENV: 'test' });
+    app = await bootApp({ DATABASE_URL: databaseUrl, IDENTITY_JWT_SIGNING_KEY: SIGNING_KEY, NODE_ENV: 'test', // W3 F-S4-1: this suite measures the 200-path timing envelope — the recovery-request
+       // throttle is orthogonal here and its default threshold would trip mid-measurement.
+IDENTITY_RECOVERY_REQUEST_THRESHOLD: '100' });
   }, 180_000);
 
   afterAll(async () => {
@@ -260,7 +262,9 @@ describe('recovery issuance mirror — F-S4-1b (clean deployment, canonical sent
 
     for (let boot = 2; boot <= 3; boot++) {
       await app.close();
-      app = await bootApp({ DATABASE_URL: databaseUrl, IDENTITY_JWT_SIGNING_KEY: SIGNING_KEY, NODE_ENV: 'test' });
+      app = await bootApp({ DATABASE_URL: databaseUrl, IDENTITY_JWT_SIGNING_KEY: SIGNING_KEY, NODE_ENV: 'test', // W3 F-S4-1: this suite measures the 200-path timing envelope — the recovery-request
+       // throttle is orthogonal here and its default threshold would trip mid-measurement.
+IDENTITY_RECOVERY_REQUEST_THRESHOLD: '100' });
       // Each boot is a fresh DI container — a fresh lazy bootstrap runs here.
       const response = await requestRecovery(app, `post-boot-${boot}@example.com`, `reboot-device-${boot}`);
       expect(response.status).toBe(200);
@@ -324,7 +328,9 @@ describe('issuance-mirror sentinel — username-squatter immunity (fallback reso
     const url = new URL(process.env['DATABASE_URL'] as string);
     url.pathname = `/${db.name}`;
     databaseUrl = url.toString();
-    app = await bootApp({ DATABASE_URL: databaseUrl, IDENTITY_JWT_SIGNING_KEY: SIGNING_KEY, NODE_ENV: 'test' });
+    app = await bootApp({ DATABASE_URL: databaseUrl, IDENTITY_JWT_SIGNING_KEY: SIGNING_KEY, NODE_ENV: 'test', // W3 F-S4-1: this suite measures the 200-path timing envelope — the recovery-request
+       // throttle is orthogonal here and its default threshold would trip mid-measurement.
+IDENTITY_RECOVERY_REQUEST_THRESHOLD: '100' });
   }, 180_000);
 
   afterAll(async () => {
@@ -384,7 +390,9 @@ describe('issuance-mirror sentinel — username-squatter immunity (fallback reso
     expect(before.username).toMatch(/^kal_eq_sentinel_[0-9a-f]{12}$/u);
 
     await app.close();
-    app = await bootApp({ DATABASE_URL: databaseUrl, IDENTITY_JWT_SIGNING_KEY: SIGNING_KEY, NODE_ENV: 'test' });
+    app = await bootApp({ DATABASE_URL: databaseUrl, IDENTITY_JWT_SIGNING_KEY: SIGNING_KEY, NODE_ENV: 'test', // W3 F-S4-1: this suite measures the 200-path timing envelope — the recovery-request
+       // throttle is orthogonal here and its default threshold would trip mid-measurement.
+IDENTITY_RECOVERY_REQUEST_THRESHOLD: '100' });
     const response = await requestRecovery(app, 'post-squatter-boot@example.com', 'squatter-reboot-device');
     expect(response.status).toBe(200);
 

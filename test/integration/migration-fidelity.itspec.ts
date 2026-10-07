@@ -30,6 +30,14 @@ const EXPECTED_MIGRATIONS = [
   '20261007101836_identity_core',
   '20261007205611_rename_password_hash_to_password',
   '20261007211822_sessions_sliding_window_expires_at_grant',
+  // W3 tracking+sync core (lane w03-s1-schema): catalog + user foods +
+  // diary + sync ledgers, governance (RLS adopt/decline per table, grants,
+  // CHECKs) — appended additively by the owning schema lane.
+  '20261007222419_w3_tracking_sync_core',
+  // W3 Stage-1 carryover (b): weight_log retroactive user FK (G2 evidence).
+  '20261007222543_weight_log_user_fk',
+  // W3 Stage-1 carryover (c): F-S4-1 recovery-request throttle counter table.
+  '20261007222622_recovery_request_throttle',
 ] as const;
 
 let db: EphemeralKalDb;

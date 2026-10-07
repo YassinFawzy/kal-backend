@@ -60,6 +60,20 @@ beforeAll(() => {
     db = await createEphemeralKalDb('rls-pilot');
     db.applyMigrations();
 
+    // W3 carryover (b): weight_log now carries its retroactive user FK
+    // (ON DELETE RESTRICT), so the fixture weigh-ins below need their owner
+    // rows. Seeded through the app role the way the signup service writes
+    // (users is not an RLS table; the INSERT grant is the signup path's).
+    for (const [userId, mailbox, handle] of [
+      [USER_A, 'a@rls-pilot.invalid', 'rls_pilot_a'],
+      [USER_B, 'b@rls-pilot.invalid', 'rls_pilot_b'],
+      [USER_C, 'c@rls-pilot.invalid', 'rls_pilot_c'],
+    ] as const) {
+      await asUserlessApp(db, async (q) => {
+        await q(`INSERT INTO users (id, email, username, status) VALUES ($1, $2, $3, 'active')`, [userId, mailbox, handle]);
+      }, { commit: true });
+    }
+
     // Seed THROUGH the app role under each user's own context — the harness
     // never fabricates rows via admin authority; every row in the scratch
     // database was created by its user the way the application would.
