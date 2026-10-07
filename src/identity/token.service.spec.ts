@@ -22,12 +22,21 @@ function makeTokens(): TokenService {
 describe('TokenService — access tokens (contract §1)', () => {
   it('issued tokens carry exactly {sub, sid, iat, exp, jti} — no other claims', async () => {
     const tokens = makeTokens();
-    const access = await tokens.issueAccessToken(USER_ID, SESSION_ID, TTL, new Date('2026-10-07T12:00:00Z'));
-    const payload = (await jwtVerify(access.token, new TextEncoder().encode(SPEC_SIGNING_KEY))).payload;
+    const fixtureNow = new Date('2026-10-07T12:00:00Z');
+    const access = await tokens.issueAccessToken(USER_ID, SESSION_ID, TTL, fixtureNow);
+    // Verification time is PINNED to the fixture instant: jose's currentDate
+    // option makes expiry evaluation deterministic, so this claim-set golden
+    // is reproducibly green regardless of wall clock (the fixture expires 15
+    // minutes after its iat — a live-clock verify would rot at 12:15 UTC).
+    const payload = (
+      await jwtVerify(access.token, new TextEncoder().encode(SPEC_SIGNING_KEY), {
+        currentDate: fixtureNow,
+      })
+    ).payload;
     expect(Object.keys(payload).sort()).toEqual(['exp', 'iat', 'jti', 'sid', 'sub']);
     expect(payload['sub']).toBe(USER_ID);
     expect(payload['sid']).toBe(SESSION_ID);
-    expect(payload['exp']).toBe(Math.floor(new Date('2026-10-07T12:00:00Z').getTime() / 1000) + TTL);
+    expect(payload['exp']).toBe(Math.floor(fixtureNow.getTime() / 1000) + TTL);
     expect(typeof payload['jti']).toBe('string');
   });
 
