@@ -97,18 +97,179 @@ model WeightLog {
 }
 
 // ---------------------------------------------------------------------------
+// Identity (Wave 2 — lane w02-s1-schema; contract: docs/api/wave-02-contract.md)
+// ---------------------------------------------------------------------------
+
+/// Consumer account anchor (ARCHITECTURE §10/D-06, PRD §8). One row per
+/// consumer identity. Not a consumer-health table — deliberately outside RLS
+/// scope (ADR-0002 §1; the per-table adopt/decline decision for every W2
+/// identity table is documented in docs/api/wave-02-contract.md §5 and the
+/// README "Roles & row-level security" section).
+///
+/// Identifiers: all three sign-in identifiers are collected at signup (D-06)
+/// and are UNIQUE at the database layer — enumeration resistance is an
+/// application-layer observable (the signup duplicate path returns a generic
+/// success; see the contract note §3), while uniqueness itself is structural.
+/// Stored values are canonicalized by the application (email/username lower-
+/// cased, phone E.164); the CHECK constraints pin the canonical shapes.
+///
+/// password_hash is a PHC string (argon2id per ADR-0003) — never decoded,
+/// never returned by any endpoint, never logged. It is NULL only for the
+/// DEFERRED social-login path (Apple/Google — no such accounts exist in W2;
+/// reserved seam per the contract note §4).
+model User {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Canonical lowercase email. Globally unique (structural uniqueness, I3).
+  email String @unique @db.Text
+
+  /// Canonical lowercase username, globally unique (PRD §8/D-06). Format
+  /// pinned by CHECK `users_username_format` in the identity migration.
+  username String @unique @db.Text
+
+  /// Canonical E.164 phone. Nullable: W2 signup always provides it (D-06);
+  /// NULL is reserved for the deferred social-login path, where the platform
+  /// may not disclose a phone number. Unique where present (PostgreSQL allows
+  /// multiple NULLs in a unique index).
+  phone String? @unique @db.Text
+
+  /// Salted adaptive hash (PHC string, argon2id — ADR-0003). NULL reserved
+  /// for the deferred social-login path only. Never exposed, never logged.
+  passwordHash String? @map("password_hash") @db.Text
+
+  /// Account lifecycle state (PRD §17). W2 only ever writes 'active'; the
+  /// closure states are reserved structurally for the W6 lifecycle module.
+  /// Sign-in refuses non-active accounts with the generic UNAUTHENTICATED
+  /// observable (contract note §3 — closure never becomes an oracle).
+  status String @default("active") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// Touched on credential changes (rehash-on-login). Column-level UPDATE
+  /// grants cover password_hash and updated_at only — identity columns are
+  /// immutable (I1).
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  sessions Session[]
+  recoveryTickets RecoveryTicket[]
+
+  @@map("users")
+}
+
+/// One row per signed-in session ("signed-in device", PRD §8/FR-007). Owned
+/// child of users (I1/I3): immutable user_id FK, no UPDATE grant on the id or
+/// user_id columns. The access JWT carries sid = this row's id; the refresh
+/// token is an opaque secret whose SHA-256 hash lives on the row and ROTATES
+/// on every use (rotation generation counter detects reuse ⇒ chain revocation
+/// — contract note §1). Not a health table — RLS declined (contract note §5);
+/// isolation via the identity module's mandatory user-scoped predicates.
+model Session {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Immutable owning-consumer id (per-plane id: consumers user_id, I1).
+  userId String @map("user_id") @db.Uuid
+
+  /// Optional client-chosen display label for "signed-in devices" lists
+  /// (≤ 64 chars, CHECK-pinned). Never a device fingerprint: the abuse-
+  /// throttle device key is a digested X-Device-Id header value that is
+  /// never stored on sessions (contract note §2).
+  deviceLabel String? @map("device_label") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// Absolute session expiry (no sliding window — contract note §1).
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+
+  /// Set on explicit revocation or refresh-chain-reuse revocation.
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  /// SHA-256 hex of the current opaque refresh token (rotates on use).
+  refreshTokenHash String @map("refresh_token_hash") @unique @db.Text
+
+  /// Increments on every refresh rotation; presenting a superseded
+  /// generation revokes the chain (contract note §1).
+  refreshGeneration Int @default(0) @map("refresh_generation") @db.Integer
+
+  lastRefreshedAt DateTime? @map("last_refreshed_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  /// Sessions-list ordering key (contract note §2: createdAt DESC, id DESC —
+  /// deterministic, reproducible pagination).
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("sessions")
+}
+
+/// Single-use, bounded-TTL account-recovery ticket (PRD §8 recovery journeys;
+/// FR-003). The ticket secret is issued once via the MailPort seam and only
+/// its SHA-256 hash is stored; completion consumes the ticket transactionally
+/// and invalidates ALL of the account's sessions. A new request invalidates
+/// prior outstanding tickets (single live ticket per account — contract note
+/// §2). Owned child of users (I1/I3). RLS declined (contract note §5).
+model RecoveryTicket {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Immutable owning-consumer id (I1).
+  userId String @map("user_id") @db.Uuid
+
+  /// SHA-256 hex of the single-use ticket secret — never the secret itself.
+  tokenHash String @map("token_hash") @unique @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// Bounded TTL (config point, contract note §6); expiry is a generic
+  /// failure observable identical to wrong/used tickets.
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+
+  /// Set transactionally at completion (single use). Expired tickets are
+  /// cleaned up by the platform housekeeping shape (enumerated grant).
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("recovery_tickets")
+}
+
+/// Platform-owned credential-attempt throttle state (PRD §8 abuse prevention;
+/// ARCHITECTURE §11 places rate-limit counters on the platform plane). Keyed
+/// by DIGESTS of the submitted identifier and the device identifier — never
+/// by user_id (counters must tick for unknown identifiers too, so the lockout
+/// observable cannot become an existence oracle; contract note §3). Not
+/// user-owned data at all — outside RLS scope entirely (declined, contract
+/// note §5).
+model AuthAttemptCounter {
+  /// Server-keyed digest of the canonicalized submitted identifier.
+  subjectKey String @map("subject_key") @db.Text
+
+  /// Server-keyed digest of the client X-Device-Id header value.
+  deviceKey String @map("device_key") @db.Text
+
+  failedCount Int @default(0) @map("failed_count") @db.Integer
+
+  firstFailedAt DateTime @default(now()) @map("first_failed_at") @db.Timestamptz(6)
+  lastFailedAt DateTime @default(now()) @map("last_failed_at") @db.Timestamptz(6)
+
+  /// Set while the (identifier, device) pair is locked; NULL otherwise.
+  lockedUntil DateTime? @map("locked_until") @db.Timestamptz(6)
+
+  @@id([subjectKey, deviceKey])
+  @@map("auth_attempt_counters")
+}
+
+// ---------------------------------------------------------------------------
 // Phase 1 domain sections — RESERVED (tables land with their wave; do not
 // build early). Order follows ARCHITECTURE §9 module map / PLAN.md §4.
 // ---------------------------------------------------------------------------
 
-// identity   (W2)  — consumer accounts, credentials (argon2id), sessions
-//                    (JWT lifecycle), sign-in identifiers (phone/email/username)
 // consent    (W5)  — per-purpose consent records with grant/withdrawal history
 // tracking   (W3)  — foods, serving variants, diary entries (frozen nutrient
 //                    snapshots, I11), diary days
 // journal    (W4)  — exercise catalog, workout sessions, routines, PRs
 // goals      (W5)  — goal setup, versioned target profiles/snapshots,
-//                    trend/streak inputs (weight_log above is its health table)
+//                    trend/streak inputs (weight_log above is its health table;
+//                    its retroactive user_id FK decision is documented in
+//                    docs/api/wave-02-contract.md §5 — deferred to W3)
 // community  (W6)  — UGC meal-prep/recipe posts, engagement, moderation states
 // content    (W7)  — Kal-curated meal ideas, review workflow, revisions
 // sync       (W3)  — client-op ledger (dedupe on user + client op ID),

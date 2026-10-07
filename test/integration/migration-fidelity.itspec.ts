@@ -23,6 +23,11 @@ const EXPECTED_MIGRATIONS = [
   '20261006081957_roles_rls_pilot',
   '20261006082537_role_contract_assertions',
   '20261006145631_rename_weight_log_owner_to_user_id',
+  // W2 identity core (lane w02-s1-schema): users/sessions/recovery_tickets/
+  // auth_attempt_counters + governance — appended additively by the owning
+  // schema lane (contract: the harness must not break; the history pin must
+  // stay truthful as it grows).
+  '20261007101836_identity_core',
 ] as const;
 
 let db: EphemeralKalDb;
