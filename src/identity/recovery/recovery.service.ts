@@ -65,6 +65,7 @@ import { PasswordHasherService } from '../password-hasher.service.js';
 import { TokenService } from '../token.service.js';
 import { KAL_MAIL_PORT, type KalMailPort } from '../mail/mail.port.js';
 import { RecoveryTicketService } from './recovery-ticket.service.js';
+import { KalRateLimited, RecoveryThrottleService } from './recovery-throttle.service.js';
 import {
   validateRecoveryCompleteBody,
   validateRecoveryRequestBody,
@@ -165,10 +166,18 @@ export class RecoveryService {
     private readonly tokens: TokenService,
     private readonly tickets: RecoveryTicketService,
     @Inject(KAL_MAIL_PORT) private readonly mail: KalMailPort,
-  ) {}
+  ) {
+    // Constructed here (not DI-registered): the scoped carryover grant covers
+    // exactly the throttle files plus this minimal hook — identity.module.ts
+    // stays untouched.
+    this.throttle = new RecoveryThrottleService(db, config, audit);
+  }
 
   /** Lazily-resolved mirror state — one promise per process, shared by concurrent requests. */
   private equalizerState: Promise<EqualizerState> | null = null;
+
+  /** W3 Stage-1 carryover F-S4-1: the recovery-request throttle (own abuse domain). */
+  private readonly throttle: RecoveryThrottleService;
 
   // ---------------------------------------------------------------------------
   // recovery request — POST /identity/recovery/request (contract §2)
@@ -193,6 +202,20 @@ export class RecoveryService {
     const subjectDigest = this.tokens.attemptSubjectDigest(input.identifier);
     const deviceDigest = this.tokens.attemptDeviceDigest(input.deviceId);
     await this.assertPairNotLocked(subjectDigest, deviceDigest);
+
+    // F-S4-1 throttle: check + tick the request-volume counter for this
+    // (identifier, device) pair — BEFORE the known/unknown divergence, so
+    // both paths perform identical work (the equalization posture, §3);
+    // counters tick regardless of identifier existence and a tripped pair
+    // rejects with the generic byte-identical 429 + Retry-After.
+    try {
+      await this.throttle.assertWithinLimit(subjectDigest, deviceDigest);
+    } catch (error) {
+      if (error instanceof KalRateLimited) {
+        throw new KalProblemException('RATE_LIMITED', { retryAfterSeconds: error.retryAfterSeconds });
+      }
+      throw error;
+    }
 
     // Equalized work (§3): the ticket mint + digest run on BOTH paths before
     // any database access; the unknown path simply discards the result.

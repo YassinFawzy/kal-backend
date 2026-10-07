@@ -22,6 +22,13 @@
  *   IDENTITY_LOCKOUT_THRESHOLD_ATTEMPTS  — default 3 (PRD §8 confirmed value).
  *   IDENTITY_LOCKOUT_DURATION_SECONDS    — default 900 (also the Retry-After basis).
  *   IDENTITY_RECOVERY_TICKET_TTL_SECONDS — default 1 800 (consumed by s2b's lane).
+ *   IDENTITY_RECOVERY_REQUEST_THRESHOLD  — default 3 (W3 Stage-1 carryover
+ *                                          F-S4-1: recovery-request throttle,
+ *                                          HD-23-family — engineering-initial,
+ *                                          founder-tunable).
+ *   IDENTITY_RECOVERY_REQUEST_WINDOW_SECONDS — default 3 600 (the throttle's
+ *                                          counting window; lock duration is
+ *                                          lockoutDurationSeconds).
  *   IDENTITY_ARGON2_MEMORY_KIB           — default 65536 (ADR-0003; ADR: "tunable
  *                                          via validated config").
  *   IDENTITY_ARGON2_TIME_COST            — default 3 (ADR-0003).
@@ -56,6 +63,11 @@ export const IDENTITY_DEFAULTS = {
   lockoutThresholdAttempts: 3,
   lockoutDurationSeconds: 900,
   recoveryTicketTtlSeconds: 1_800,
+  // W3 Stage-1 carryover F-S4-1 (HD-23 family): recovery-request throttle —
+  // engineering-initial values, founder-tunable at soft launch. The lock
+  // DURATION reuses lockoutDurationSeconds (one Retry-After basis).
+  recoveryRequestThreshold: 3,
+  recoveryRequestWindowSeconds: 3_600,
 } as const;
 
 const MIN_SIGNING_KEY_LENGTH = 32;
@@ -69,6 +81,8 @@ export interface IdentityConfig {
   readonly lockoutThresholdAttempts: number;
   readonly lockoutDurationSeconds: number;
   readonly recoveryTicketTtlSeconds: number;
+  readonly recoveryRequestThreshold: number;
+  readonly recoveryRequestWindowSeconds: number;
   readonly argon2: {
     readonly memoryCostKiB: number;
     readonly timeCost: number;
@@ -151,6 +165,8 @@ export function validateIdentityConfig(
     ['lockoutThresholdAttempts', { min: 1, max: 100, fallback: IDENTITY_DEFAULTS.lockoutThresholdAttempts }],
     ['lockoutDurationSeconds', { min: 1, max: 86_400, fallback: IDENTITY_DEFAULTS.lockoutDurationSeconds }],
     ['recoveryTicketTtlSeconds', { min: 60, max: 86_400, fallback: IDENTITY_DEFAULTS.recoveryTicketTtlSeconds }],
+    ['recoveryRequestThreshold', { min: 1, max: 100, fallback: IDENTITY_DEFAULTS.recoveryRequestThreshold }],
+    ['recoveryRequestWindowSeconds', { min: 60, max: 86_400, fallback: IDENTITY_DEFAULTS.recoveryRequestWindowSeconds }],
   ];
   for (const [key, spec] of intSpecs) {
     const envName = `IDENTITY_${key.replace(/[A-Z]/gu, (c) => `_${c}`).toUpperCase()}`;
@@ -193,6 +209,8 @@ export function validateIdentityConfig(
       lockoutThresholdAttempts: parsed.lockoutThresholdAttempts as number,
       lockoutDurationSeconds: parsed.lockoutDurationSeconds as number,
       recoveryTicketTtlSeconds: parsed.recoveryTicketTtlSeconds as number,
+      recoveryRequestThreshold: parsed.recoveryRequestThreshold as number,
+      recoveryRequestWindowSeconds: parsed.recoveryRequestWindowSeconds as number,
       argon2: {
         memoryCostKiB: (argon2Memory as { value: number }).value,
         timeCost: (argon2Time as { value: number }).value,

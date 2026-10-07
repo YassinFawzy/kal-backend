@@ -50,6 +50,18 @@ The identity wave's session semantics, endpoint shapes, lockout/enumeration obse
 
 Identity schema (migration `20261007101836_identity_core`): `users` (three unique sign-in identifiers + PHC `password_hash` per ADR-0003), `sessions` (rotating refresh secret, generation counter), `recovery_tickets` (single-use hashed tickets), `auth_attempt_counters` (platform-owned throttle digests). Grants follow the least-privilege table pattern; **RLS is declined per table** (see the table in "Roles & row-level security" above).
 
+### W3 tracking + sync (contract frozen — `docs/api/wave-03-contract.md`)
+
+The tracking & sync wave's schema, sync semantics, module seams, normalization rules, seed manifest, and client-store v3 freeze are in the wave-03 contract note. This repository serves the `w3` fixture document additively (`GET /contracts/w3` — every `w1`/`w2` entry retained byte-stably; both pinned by golden hashes).
+
+Schema (migration `20261007222419_w3_tracking_sync_core` + carryovers `20261007222543_weight_log_user_fk`, `20261007222622_recovery_request_throttle`):
+
+- **Platform catalog** (RLS declined): `foods` (+ stored normalized names/aliases for FR-010 search), `serving_variants` (gram weights per FR-012), `barcode_product_cache` (FR-017 pipeline; Open-Food-Facts rows stay license-partitioned via `license_partition`).
+- **Consumer health tables** (fail-closed RLS ADOPTED — `app.user_id` policy per the weight_log pilot): `user_foods` + `user_food_servings` (compound user references, I3), `diary_entries` (client-entity-id PK; frozen nutrient snapshots, I11; client-local `local_date` — the server never re-derives the day), `diary_days` (rollup cache), `favorites`, and `sync_operations` (the op ledger; its payload mirrors diary content, so it adopts).
+- **Metadata/throttle tables** (RLS declined, documented per table): `sync_idempotency_keys` (batch `Idempotency-Key` records — acks never carry payloads), `user_food_create_counters` (the shared PRD §8 limiter behind BOTH the REST and sync-apply user-food create paths).
+- **Diary REST mutations do not exist** — diary/user-food/favorite mutations flow exclusively through sync ingestion (`POST /sync/ops`); the frozen per-op outcomes, LWW tiebreak `(clientUpdatedAt, opId)`, tombstones with no same-id resurrection, and user-bound opaque delta cursors are all specified in the contract note §1.
+- The curated Egyptian core pack seeds from `prisma/seed-manifest.ts` (48 items, `node prisma/seed.ts`) — values are **engineering-initial pending founder nutrition review** (ledger §7-E2).
+
 ## Checks
 
 ```bash
@@ -72,6 +84,8 @@ createdb kal                  # once, if it does not exist yet
 All agents and sessions target this database via `DATABASE_URL` in `.env` (never committed). Ephemeral test databases for the A/B/C security harness are created/dropped by the test harness itself (the Wave 1 pattern below — see `prisma/migrations`).
 
 > Prisma 7 note: the `prisma-client` generator is adapter-based — instantiating the generated client requires a driver adapter. `@prisma/adapter-pg` (wrapping the repo's `pg` dependency) is the sanctioned adapter; `src/db/prisma.service.ts` (application) and `prisma/seed.ts` (seed scaffold) both show the pattern. The generated client lands in `generated/` (gitignored) via `pnpm prisma generate` and is compiled as part of `pnpm build` (its `.ts`-extension internal imports are rewritten by `rewriteRelativeImportExtensions` in `tsconfig.json`).
+>
+> **F-W2-1 (UTC-correct timestamptz reads):** `PrismaService` pins `-c timezone=UTC` as a POOL startup option — `@prisma/adapter-pg`'s timestamptz parser rewrites the rendered offset to `+00:00` without converting wall-clock time, so a non-UTC session would shift every read (+3 h on the Africa/Cairo dev cluster). The pool pin makes every connection render UTC; identity's per-transaction `TimeZone` pins stay (harmless belt-and-suspenders). Regression: `test/integration/prisma-utc.itspec.ts` + the `identity-tz` e2e.
 
 ## Database migrations (workflow)
 
@@ -133,7 +147,22 @@ Wave 1 establishes the structural-isolation pattern every later wave copies:
   | `auth_attempt_counters` | **Decline (outside scope)** | Platform-owned throttle state keyed by digests — no `user_id` column at all, so no per-user row security applies; not user-owned data. |
 
   Structure is pinned by `test/integration/identity-schema.itspec.ts` (no `relrowsecurity`, zero `pg_policies` rows, column-grant scoping).
-- **Append-only audit** (`audit_events`, platform-owned, deliberately outside RLS scope): no UPDATE/DELETE grants for any role **and** a `BEFORE UPDATE/DELETE` trigger that raises — the trigger binds even the table owner; only a superuser could bypass it (break-glass territory, audited).
+- **Compound user-reference pattern — first structural uses (I3):** `user_food_servings`, `diary_entries`, and `favorites` reference `user_foods(id, user_id)` via composite FKs — a cross-account child row is structurally impossible. `weight_log` (W3 carryover b) takes the PLAIN FK (`weight_log_user_id_fkey`, `ON DELETE RESTRICT`): it is an owned ROOT table with no children, so the compound shape has no target there. The generic pattern for future waves:
+- **W3 tracking + sync tables — per-table decisions (contract note §5).** Consumer-owned HEALTH tables ADOPT the fail-closed policy; platform catalog and metadata/throttle tables DECLINE with rationale. Structure pinned by `test/integration/tracking-rls.itspec.ts` (24 A/B/C, fail-closed, grants-matrix, and platform-scope cases):
+
+  | Table | Decision | Rationale (ADR-0002-consistent) |
+  |---|---|---|
+  | `foods`, `serving_variants`, `barcode_product_cache` | **Decline** | Platform catalog, not user-scoped (no `user_id`); every authenticated consumer reads the same governed rows. |
+  | `user_foods` + `user_food_servings` | **Adopt** | Consumer-owned health data (label-create foods); compound user reference `(user_food_id, user_id)` (I3) on children. |
+  | `diary_entries` | **Adopt** | The core health table (frozen snapshots, I11); simulated-bug tests prove the DB blocks what app code forgets. |
+  | `diary_days` | **Adopt** | Derived per-user health rollups. |
+  | `favorites` | **Adopt** | Consumer-owned, in the wave's frozen adopted set. |
+  | `sync_operations` | **Adopt** | Its `payload` mirrors diary/user-food content — a leak is exactly as catastrophic (ADR-0002 scope). |
+  | `sync_idempotency_keys` | **Decline** | Owned child, metadata-only content (digests + ack envelopes that never carry payloads) — the `sessions` posture. |
+  | `user_food_create_counters` | **Decline (outside scope)** | Platform abuse-control state (§11 places rate-limit counters on the platform plane). |
+  | `recovery_request_counters` | **Decline (outside scope)** | Digest-keyed throttle state, no `user_id` — the `auth_attempt_counters` posture (F-S4-1 carryover). |
+
+  **Platform-scope bypass: none added in W3** (no cross-account job exists) — `kal_platform` carries NO grants on adopted tables this wave; the W1 `weight_log` exemptions remain the standing pattern. On declined tables, platform holds only the enumerated shapes (catalog SELECT; cache + recovery-counter SELECT/DELETE housekeeping).
 - **Compound user-reference pattern for later waves (I3):** owned child tables carry the per-plane user id column and expose a composite key so cross-user references are structurally impossible:
 
   ```sql
@@ -146,7 +175,7 @@ Wave 1 establishes the structural-isolation pattern every later wave copies:
   );
   ```
 
-  (The W1 tables stand alone — no consumer table exists yet, so `weight_log.user_id` deliberately has no FK; the identity wave documents whether pilot tables adopt the composite pattern retroactively.)
+  (The W1 tables stand alone — no consumer table existed then; the identity wave recorded the deferral, and W3 landed the plain `weight_log` FK plus the first compound references, above.)
 - **Never assert RLS behavior over a superuser connection** — superusers bypass RLS unconditionally. Verification connections use `SET ROLE kal_app` / `SET ROLE kal_platform` and assert on `current_user` (proof pattern in the Wave 1 merge request evidence).
 - Introspection: `psql "$DATABASE_URL" -c '\dp weight_log' -c "SELECT * FROM pg_policies;"`. After the rename, `pg_policies` must show the recreated policy with the NEW GUC string — `weight_log_user_context … (user_id = (current_setting('app.user_id'::text, true))::uuid)` in both `qual` and `with_check`; `information_schema.columns` shows `user_id` (no `owner_id`), and `pg_indexes` shows `weight_log_user_id_recorded_at_idx`.
 

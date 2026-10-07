@@ -23,6 +23,9 @@ describe('identity config validation', () => {
     expect(result.config.lockoutThresholdAttempts).toBe(3);
     expect(result.config.lockoutDurationSeconds).toBe(900);
     expect(result.config.recoveryTicketTtlSeconds).toBe(1_800);
+    // W3 Stage-1 carryover F-S4-1 (HD-23 family): recovery-request throttle.
+    expect(result.config.recoveryRequestThreshold).toBe(3);
+    expect(result.config.recoveryRequestWindowSeconds).toBe(3_600);
     expect(result.config.argon2).toEqual({ memoryCostKiB: 65_536, timeCost: 3, parallelism: 1 });
     // development/test without a key: an ephemeral key is generated (never empty).
     expect(result.config.jwtSigningKey.length).toBeGreaterThanOrEqual(32);
@@ -41,6 +44,19 @@ describe('identity config validation', () => {
     expect(result.config.lockoutDurationSeconds).toBe(60);
   });
 
+  it('the F-S4-1 throttle points change behavior via their environment keys (two-config proof)', () => {
+    const result = validateIdentityConfig(
+      { ...BASE, IDENTITY_RECOVERY_REQUEST_THRESHOLD: '7', IDENTITY_RECOVERY_REQUEST_WINDOW_SECONDS: '120' },
+      'test',
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.config.recoveryRequestThreshold).toBe(7);
+    expect(result.config.recoveryRequestWindowSeconds).toBe(120);
+  });
+
   it('out-of-range, non-integer, and garbage values refuse validation', () => {
     for (const env of [
       { IDENTITY_LOCKOUT_THRESHOLD_ATTEMPTS: '0' },
@@ -48,6 +64,9 @@ describe('identity config validation', () => {
       { IDENTITY_ACCESS_TOKEN_TTL_SECONDS: 'abc' },
       { IDENTITY_SESSION_TTL_SECONDS: '1' },
       { IDENTITY_ARGON2_MEMORY_KIB: '100' },
+      { IDENTITY_RECOVERY_REQUEST_THRESHOLD: '0' },
+      { IDENTITY_RECOVERY_REQUEST_WINDOW_SECONDS: '59' },
+      { IDENTITY_RECOVERY_REQUEST_THRESHOLD: 'not-a-number' },
     ]) {
       const result = validateIdentityConfig({ ...BASE, ...env }, 'test');
       expect(result.ok, JSON.stringify(env)).toBe(false);

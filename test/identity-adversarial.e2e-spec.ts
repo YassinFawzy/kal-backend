@@ -501,18 +501,23 @@ describe('lockout — (identifier, device), threshold, both axes, expiry (contra
     expectRawIdentical(recovery429, signin429, 'recovery 429 vs signin 429');
   });
 
-  it('PROBE (supervisor §10-1, pinned reading): recovery requests never tick the pair counter — 2 failures + K recovery requests still leaves the 3rd sign-in failure at 401', async () => {
+  it('PROBE (supervisor §10-1, pinned reading): recovery requests never tick the CREDENTIAL pair counter — 2 failures + recovery requests below the F-S4-1 throttle threshold still leaves the 3rd sign-in failure at 401', async () => {
     const ident = 's4-recprobe@example.com';
     await signup(app, { email: ident, phone: '+201700000025', username: 's4_recprobe' });
     const device = freshDevice('recprobe');
     await postSignin(app, ident, WRONG_PASSWORD, device); // count 1
     await postSignin(app, ident, WRONG_PASSWORD, device); // count 2
-    for (let k = 0; k < 6; k += 1) {
+    // W3 F-S4-1 note: recovery requests now tick their OWN volume counter
+    // (recovery_request_counters — amended wave-02 note §3); the default
+    // threshold is 3, so exactly 3 requests stay under it. The credential
+    // counter is a separate abuse domain and is ticked by nothing here.
+    for (let k = 0; k < 3; k += 1) {
       const recovery = await recoveryRequest(app, ident, device);
       expect(recovery.status, `recovery request ${k + 1} on the half-counted pair`).toBe(200);
       expect(recovery.text).toBe('{"status":"accepted"}');
     }
-    // If recovery ticked, this would be the 429 observable; it is the plain 401.
+    // If recovery ticked the credential counter, this would be the 429
+    // observable; it is the plain 401.
     const third = await postSignin(app, ident, WRONG_PASSWORD, device);
     expect(third.status, 'recovery requests did NOT tick the credential counter').toBe(401);
     // The 4th failure locks — exactly per the sign-in counter.
@@ -520,12 +525,14 @@ describe('lockout — (identifier, device), threshold, both axes, expiry (contra
     expect((await postSignin(app, ident, PASSWORD, device)).status).toBe(429);
   });
 
-  it('PROBE (supervisor §10-1, F-S4-1 evidence): recovery requests are never throttled by ANY counter of their own — pinned as implemented, finding routed', async () => {
-    // Characterization (NOT endorsement — see MR finding F-S4-1): a high
-    // volume of recovery requests across one device and mixed identifiers
-    // never produces anything but the identical accepted bytes. The pair-lock
-    // pre-check fires only for pairs ALREADY locked by sign-in failures; no
-    // recovery-specific counter exists to stop a request flood.
+  it('PROBE (supervisor §10-1, F-S4-1 RESOLVED in W3): recovery-request flooding across fresh pairs stays byte-stable within each pair volume — per-pair throttle per the amended note §3', async () => {
+    // Amended characterization (the G2 "unthrottled surface" finding was
+    // accepted WITH the W3 config-point throttle — wave-02 note §3, added
+    // 2026-10-08): each fresh (identifier, device) pair gets its own volume
+    // counter, so a flood that rotates devices stays under every pair's
+    // threshold and every response is the identical accepted bytes. The
+    // per-pair trip itself (3×200 then 429) is pinned by the W3 throttle
+    // suite (test/recovery-throttle.e2e-spec.ts).
     const seen = new Set<string>();
     for (let k = 0; k < 12; k += 1) {
       const identifier = k % 3 === 0 ? ACC_REC.email : k % 3 === 1 ? UNKNOWN_EMAIL : 's4-axis-a@example.com';
