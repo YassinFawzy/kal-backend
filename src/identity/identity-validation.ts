@@ -45,9 +45,15 @@ export interface SigninInput {
 }
 
 const USERNAME_PATTERN = /^[a-z0-9_]{3,30}$/u;
-const PHONE_PATTERN = /^\+[1-9][0-9]{6,15}$/u;/** Pragmatic RFC-shape: dot-atom local part + one or more dot-separated labels. */
+const PHONE_PATTERN = /^\+[1-9][0-9]{6,15}$/u;/** Pragmatic RFC-shape: dot-atom local part + one or more dot-separated labels.
+ * Local-part class = RFC 5321 atext (includes `-`). Supervisor-routed written
+ * request 2026-10-07 (found during w02-s3-auth verification; s2 lane closed):
+ * the class originally omitted the hyphen, wrongly rejecting valid RFC-shaped
+ * addresses (e.g. live-123@x.test) — narrower than the frozen contract note §2
+ * "email RFC-shaped, ≤ 254 chars". Direction dictated by the contract; DB CHECK
+ * already loose; no migration, no fixture change. */
 const EMAIL_PATTERN =
-  /^[a-z0-9!#$%&'*+/=?^_`{|}~]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u;
+  /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u;
 /** Opaque printable ASCII, same class as X-Request-Id (conventions §0). */
 const DEVICE_ID_PATTERN = /^[\x20-\x7E]{1,128}$/u;
 /** Sign-in identifier gross bound (email max; no class-specific 400/401 split). */

@@ -150,3 +150,40 @@ describe('canonicalization helpers', () => {
     expect(canonicalizePhone(42)).toBeNull();
   });
 });
+
+/**
+ * Supervisor-routed written request 2026-10-07 (found during w02-s3-auth
+ * verification; s2 lane closed; executed by the active identity lane s2b per
+ * the scoped grant): the local-part class is RFC 5321 atext INCLUDING the
+ * hyphen — the frozen contract note §2 "email RFC-shaped, ≤ 254 chars" is the
+ * direction. Additive cases only; every pre-existing golden above is untouched.
+ */
+describe('email local part accepts RFC 5321 atext hyphens (supervisor-routed contract alignment)', () => {
+  const base = { phone: '+20100123456', username: 'amira', password: PASSWORD };
+
+  it('accepts hyphenated local parts at signup and sign-in, with canonicalization unchanged', () => {
+    const signup = validateSignupBody({ ...base, email: 'Live-123@Example.COM', username: 'amira' });
+    expect(signup.ok).toBe(true);
+    if (signup.ok) {
+      expect(signup.value.email).toBe('live-123@example.com'); // accepted AND lowercased
+    }
+
+    const signin = validateSigninBody({ identifier: 'First-Last@Example.com', password: PASSWORD }, 'device-1');
+    expect(signin.ok).toBe(true);
+    if (signin.ok) {
+      expect(signin.value.identifier).toBe('first-last@example.com');
+      expect(signin.value.identifierClass).toBe('email');
+    }
+  });
+
+  it('still rejects malformed local parts (non-atext characters, empty atoms)', () => {
+    for (const email of ['has space@example.com', '"quoted"@example.com', 'a..b@example.com', '.leading-dot@example.com', 'trailing.@example.com']) {
+      const result = validateSignupBody({ ...base, email, username: 'amira' });
+      expect(result.ok, email).toBe(false);
+      if (!result.ok) {
+        expect(result.errors.some((error) => error.field === 'email')).toBe(true);
+        expect(JSON.stringify(result.errors)).not.toContain(email); // value-free (I12)
+      }
+    }
+  });
+});
