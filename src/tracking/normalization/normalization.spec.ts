@@ -18,9 +18,11 @@ import { SEED_FOODS } from '../../../prisma/seed-manifest.js';
  *     ASCII-case folding monotonicity;
  *   - seed-manifest stability (contract §8): every hand-derived
  *     `*Normalized` field in `prisma/seed-manifest.ts` is reproduced exactly
- *     by the pipeline (48 items, 224 fields).
+ *     by the pipeline (48 items, 228 fields).
  *
- * Golden row 3 (شاورما · شاورمة) is ESCALATED — see its describe block.
+ * Golden row 3 (شاورما · شاورمة) pins supervisor amendment 1 (2026-10-08):
+ * distinct rule-faithful keys, with the row's cross-spelling equivalence
+ * data-carried by the f00d/f00e شاورمه-form manifest aliases.
  */
 
 // -- Test-local matching model (contract §7): exact → prefix → substring. --
@@ -74,6 +76,11 @@ function expectHit(inputs: readonly string[], foodId: string, rank: MatchRank): 
   }
 }
 
+// Resolved row-3 foods (supervisor amendment 1): shawarma sandwiches whose
+// cross-spelling equivalence is carried by their شاورمه-form aliases.
+const F00D = '00000000-0000-4000-8000-00000000f00d';
+const F00E = '00000000-0000-4000-8000-00000000f00e';
+
 // -- The frozen golden-case list (contract §7 table). --
 
 const TAAMEYA_GROUP = ['طعمية', 'طعميه', 'طَعْمِيَّة', 'طــعمية'] as const; // diacritics + tatweel spellings
@@ -106,7 +113,7 @@ const LONG_EXPECTED = Array.from({ length: 2000 }, () => 'طعميه').join(' ')
 const CORPUS: readonly string[] = [
   ...GOLDEN_GROUPS.flat(),
   'شاورما',
-  'شاورمة', // escalated row 3 members — keys pinned, equivalence not asserted
+  'شاورمة', // resolved row 3 members — distinct keys (amendment 1), equivalence data-carried
   // boundary
   '',
   ' ',
@@ -165,20 +172,35 @@ describe('golden cases (contract §7 frozen table — input → normalized key)'
   });
 });
 
-describe('golden row 3 — ESCALATED to w03-supervisor (2026-10-08), resolution pending', () => {
-  // The frozen §7 golden table claims `شاورما` · `شاورمة` → common key
-  // `شاورمه` ("all must produce identical matches"). The frozen §7 RULE LIST
-  // cannot produce that: `شاورما` ends in bare alef U+0627 — NO frozen rule
-  // maps U+0627 (rule 4 folds only أ إ آ ٱ) — so it normalizes to `شاورما`;
-  // `شاورمة` ends in taa marbuta U+0629 → rule 5 → `شاورمه`. Encoding the
-  // table's equivalence would require a NEW folding rule (extra foldings are
-  // contract changes — task s2b forbids improvising past the freeze).
-  // Per the supervisor's written interim approval: pin each member's exact
-  // rule-faithful normalized key; assert NEITHER equivalence NOR
-  // non-equivalence until the written resolution lands.
-  it('normalizes each member to its rule-faithful exact key', () => {
+describe('golden row 3 — resolved by supervisor amendment 1 (claim-verified, 2026-10-08)', () => {
+  // Resolution of the 2026-10-08 written escalation (supervisor amendment 1;
+  // kal-backend 278cd4d, docs 023af15; contract §7 row 3 amended in place):
+  // the row's members are the documented DISTINCTNESS case — `شاورما` ends in
+  // bare alef U+0627 (no frozen rule maps it) and `شاورمة` ends in taa
+  // marbuta U+0629 (rule 5 → ه), so they normalize to DISTINCT keys. A
+  // blanket word-final ا→ه fold was claim-verified as linguistically unsound
+  // (شفا/شفه، علا/عله، هما/همه) and is NOT added. The cross-spelling search
+  // equivalence the row intended is DATA-CARRIED: f00d/f00e carry
+  // شاورمه-form manifest aliases, so both spellings surface the same foods
+  // through aliases_normalized under the frozen matching model.
+
+  it('distinct keys: شاورما → شاورما, شاورمة → شاورمه — NOT equal (over-folding guard)', () => {
     expect(normalize('شاورما')).toBe('شاورما');
     expect(normalize('شاورمة')).toBe('شاورمه');
+    expect(normalize('شاورما')).not.toBe(normalize('شاورمة'));
+  });
+
+  it('alias-mediated equivalence: both spellings find the same shawarma foods (f00d + f00e)', () => {
+    const ids = (hits: readonly CorpusHit[]) => hits.map((hit) => hit.foodId);
+    expect(ids(searchManifest('شاورما'))).toEqual(ids(searchManifest('شاورمه')));
+    expect(ids(searchManifest('شاورما'))).toEqual([F00D, F00E]);
+  });
+
+  it('rank split per the frozen matching model: bare شاورمه alias hits exact; شاورما hits prefix', () => {
+    expectHit(['شاورمه'], F00D, 'exact');
+    expectHit(['شاورمه'], F00E, 'exact');
+    expectHit(['شاورما'], F00D, 'prefix');
+    expectHit(['شاورما'], F00E, 'prefix');
   });
 });
 
@@ -383,7 +405,7 @@ describe('property-style spot checks', () => {
 });
 
 describe('seed-manifest stability pin (contract §8)', () => {
-  it('reproduces every hand-derived normalized field exactly (48 items)', () => {
+  it('reproduces every hand-derived normalized field exactly (48 items, 228 fields)', () => {
     expect(SEED_FOODS.length).toBe(48);
     let fields = 0;
     for (const food of SEED_FOODS) {
@@ -397,6 +419,6 @@ describe('seed-manifest stability pin (contract §8)', () => {
         fields++;
       }
     }
-    expect(fields).toBe(224);
+    expect(fields).toBe(228);
   });
 });
