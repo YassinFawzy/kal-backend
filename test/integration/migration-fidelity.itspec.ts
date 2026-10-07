@@ -28,6 +28,7 @@ const EXPECTED_MIGRATIONS = [
   // schema lane (contract: the harness must not break; the history pin must
   // stay truthful as it grows).
   '20261007101836_identity_core',
+  '20261007205611_rename_password_hash_to_password',
 ] as const;
 
 let db: EphemeralKalDb;

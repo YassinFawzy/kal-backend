@@ -115,7 +115,7 @@ describe('account deletion is RESTRICTed (explicit platform job shape)', () => {
     return (async () => {
       // Seed: one user with one live session and one outstanding ticket (kal_app INSERTs).
       await asDbRole(db, 'kal_app', null, async (query) => {
-        await query('INSERT INTO users (email, username, phone, password_hash, status) VALUES ($1, $2, $3, $4, $5)', [
+        await query('INSERT INTO users (email, username, phone, password, status) VALUES ($1, $2, $3, $4, $5)', [
           EMAIL,
           USERNAME,
           '+202200000001',
@@ -260,7 +260,7 @@ describe('RLS-decline reality on identity tables (contract §5 — the documente
     // Seed one marker row so the read is non-trivial.
     await asDbRole(db, 'kal_app', null, async (query) => {
       await query(
-        `INSERT INTO users (email, username, phone, password_hash, status) VALUES ($1, $2, $3, $4, $5)`,
+        `INSERT INTO users (email, username, phone, password, status) VALUES ($1, $2, $3, $4, $5)`,
         ['s4-gov-decline@invalid', 's4_gov_decline', '+202200000002', FIXTURE_HASH, 'active'],
       );
     }, { commit: true });

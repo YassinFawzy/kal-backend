@@ -135,14 +135,14 @@ describe('user binding is immutable (I1/I3)', () => {
               has_column_privilege('kal_app', 'users', cols.column_name, 'UPDATE') AS updatable
          FROM information_schema.columns cols
         WHERE cols.table_name = 'users' AND cols.column_name IN
-              ('id', 'email', 'username', 'phone', 'status', 'created_at', 'password_hash', 'updated_at')
+              ('id', 'email', 'username', 'phone', 'status', 'created_at', 'password', 'updated_at')
         ORDER BY cols.column_name`,
     );
     expect(rows.rows).toEqual([
       { column_name: 'created_at', updatable: false },
       { column_name: 'email', updatable: false },
       { column_name: 'id', updatable: false },
-      { column_name: 'password_hash', updatable: true },
+      { column_name: 'password', updatable: true },
       { column_name: 'phone', updatable: false },
       { column_name: 'status', updatable: false },
       { column_name: 'updated_at', updatable: true },
@@ -193,7 +193,7 @@ describe('canonical-shape CHECKs reject malformed identity data at the database'
     const error = await capturePgError(() =>
       asDbRole(dbHandle, 'kal_app', null, async (query) => {
         await query(
-          `INSERT INTO users (email, username, phone, password_hash, status) VALUES ($1, $2, $3, $4, $5)`,
+          `INSERT INTO users (email, username, phone, password, status) VALUES ($1, $2, $3, $4, $5)`,
           [email, username, phone, '$argon2id$v=19$m=65536,t=3,p=1$fixture$fixturehashvalue', status],
         );
       }, { commit: true }),
@@ -205,7 +205,7 @@ describe('canonical-shape CHECKs reject malformed identity data at the database'
     // Canonical accept (fixture PHC string — never a real credential).
     await asDbRole(db, 'kal_app', null, async (query) => {
       await query(
-        `INSERT INTO users (email, username, phone, password_hash, status)
+        `INSERT INTO users (email, username, phone, password, status)
          VALUES ('fixture-a@invalid', 'fixture_user_a', '+201000000001', '$argon2id$v=19$m=65536,t=3,p=1$fixture$fixturehashvalue', 'active')`,
       );
     }, { commit: true });

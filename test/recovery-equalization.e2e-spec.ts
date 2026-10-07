@@ -27,7 +27,7 @@
  *     correlation id) to any other ticket failure.
  *   - Username-squatter immunity: an ACTIVE account holding the canonical
  *     `kal_eq_sentinel` username is NEVER picked — eligibility is guarded by
- *     status = 'closed' AND password_hash IS NULL, and the resolver falls
+ *     status = 'closed' AND password IS NULL, and the resolver falls
  *     back to a randomized name, reused idempotently across re-boots.
  *   - Compact timing sanity: interleaved medians of known vs unknown
  *     recovery requests, asserting the delta within a GENEROUS ceiling set
@@ -128,7 +128,7 @@ function withoutRequestId(body: Record<string, unknown>): string {
 async function sentinelSnapshot(): Promise<SentinelSnapshot> {
   const sentinels = await adminQuery(
     db,
-    "SELECT id, username FROM users WHERE status = 'closed' AND password_hash IS NULL ORDER BY created_at",
+    "SELECT id, username FROM users WHERE status = 'closed' AND password IS NULL ORDER BY created_at",
   );
   expect(sentinels.rowCount).toBe(1);
   const row = sentinels.rows[0] as { id: string; username: string };
@@ -345,13 +345,13 @@ describe('issuance-mirror sentinel — username-squatter immunity (fallback reso
     // The squatter row is untouched by the mirror.
     const squatterRows = await adminQuery(
       db,
-      'SELECT id, status, password_hash FROM users WHERE username = $1',
+      'SELECT id, status, password FROM users WHERE username = $1',
       [EQUALIZER_SENTINEL_USERNAME],
     );
     expect(squatterRows.rowCount).toBe(1);
-    const squatterRow = squatterRows.rows[0] as { id: string; status: string; password_hash: string | null };
+    const squatterRow = squatterRows.rows[0] as { id: string; status: string; password: string | null };
     expect(squatterRow.status).toBe('active'); // still active — eligibility guard refused it
-    expect(squatterRow.password_hash).not.toBeNull(); // still credentialed
+    expect(squatterRow.password).not.toBeNull(); // still credentialed
     const squatterTickets = await adminQuery(
       db,
       'SELECT COUNT(*)::int AS count FROM recovery_tickets WHERE user_id = $1',
@@ -362,7 +362,7 @@ describe('issuance-mirror sentinel — username-squatter immunity (fallback reso
     // The mirror's sentinel: exactly one closed + credential-less user, in the fallback namespace.
     const sentinels = await adminQuery(
       db,
-      "SELECT id, username FROM users WHERE status = 'closed' AND password_hash IS NULL",
+      "SELECT id, username FROM users WHERE status = 'closed' AND password IS NULL",
     );
     expect(sentinels.rowCount).toBe(1);
     const sentinelRow = sentinels.rows[0] as { id: string; username: string };

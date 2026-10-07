@@ -155,16 +155,16 @@ describe('signup (identity.signup)', () => {
 
     const row = await adminQuery(
       db,
-      'SELECT email, username, phone, password_hash, status FROM users WHERE email = $1',
+      'SELECT email, username, phone, password, status FROM users WHERE email = $1',
       [USER_KALILA.email],
     );
     expect(row.rowCount).toBe(1);
-    const user = row.rows[0] as { email: string; username: string; phone: string; password_hash: string; status: string };
+    const user = row.rows[0] as { email: string; username: string; phone: string; password: string; status: string };
     expect(user.username).toBe('kalila');
     expect(user.phone).toBe('+201000000001');
     expect(user.status).toBe('active');
-    expect(user.password_hash).toMatch(/^\$argon2id\$v=19\$m=65536,t=3,p=1\$/u);
-    expect(user.password_hash).not.toContain(PASSWORD);
+    expect(user.password).toMatch(/^\$argon2id\$v=19\$m=65536,t=3,p=1\$/u);
+    expect(user.password).not.toContain(PASSWORD);
   });
 
   it('duplicate identifier: identical generic success — same body bytes, no extra row', async () => {
@@ -268,7 +268,7 @@ describe('enumeration resistance and lockout (contract §3)', () => {
     // A closed account (lifecycle states are structurally reserved; inserted
     // here as a fixture — sign-in must not treat closure as an oracle).
     await db.pool.query(
-      'INSERT INTO users (email, username, phone, password_hash, status) VALUES ($1, $2, $3, $4, $5)',
+      'INSERT INTO users (email, username, phone, password, status) VALUES ($1, $2, $3, $4, $5)',
       [
         ['closed', 'example.com'].join('@'),
         'closeduser',
@@ -742,7 +742,7 @@ describe('hash goldens (ADR-0003) — rehash-on-login', () => {
       parallelism: 1,
     });
     await db.pool.query(
-      'INSERT INTO users (email, username, phone, password_hash, status) VALUES ($1, $2, $3, $4, $5)',
+      'INSERT INTO users (email, username, phone, password, status) VALUES ($1, $2, $3, $4, $5)',
       [email, 'rehashuser', '+201000000004', legacyHash, 'active'],
     );
 
@@ -750,8 +750,8 @@ describe('hash goldens (ADR-0003) — rehash-on-login', () => {
     const signinResponse = await signin(app, email, 'rehash-upgrade-password', 'rehash-device');
     expect(signinResponse.status).toBe(200);
 
-    const stored = await db.pool.query('SELECT password_hash FROM users WHERE email = $1', [email]);
-    const upgraded = (stored.rows[0] as { password_hash: string }).password_hash;
+    const stored = await db.pool.query('SELECT password FROM users WHERE email = $1', [email]);
+    const upgraded = (stored.rows[0] as { password: string }).password;
     expect(upgraded).not.toBe(legacyHash);
     expect(upgraded).toMatch(/^\$argon2id\$v=19\$m=65536,t=3,p=1\$/u);
 

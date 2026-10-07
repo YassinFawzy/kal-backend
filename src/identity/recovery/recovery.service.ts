@@ -319,7 +319,7 @@ export class RecoveryService {
    *     NOTHING` (never create()+catch(P2002) — a duplicate-key PG log line
    *     per process boot is log noise);
    *   - the canonical username is only used when it is ELIGIBLE (closed AND
-   *     password_hash NULL — `isEligibleEqualizerSentinel`); a username
+   *     password NULL — `isEligibleEqualizerSentinel`); a username
    *     squatter holding it can never be picked, and the resolver falls back
    *     to a randomized name, reusing an existing fallback sentinel before
    *     minting a new one so repeated boots converge on ONE row;
@@ -428,7 +428,7 @@ export class RecoveryService {
         return null;
       }
       // Credential replacement (the migration grants exactly this UPDATE:
-      // password_hash + the @updatedAt companion).
+      // password + the @updatedAt companion).
       await tx.user.update({
         where: { id: verified.userId },
         data: { passwordHash },

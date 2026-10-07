@@ -113,7 +113,7 @@ model WeightLog {
 /// Stored values are canonicalized by the application (email/username lower-
 /// cased, phone E.164); the CHECK constraints pin the canonical shapes.
 ///
-/// password_hash is a PHC string (argon2id per ADR-0003) — never decoded,
+/// password is a PHC string (column named password per founder CR 2026-10-07; still a hash, never plaintext) (argon2id per ADR-0003) — never decoded,
 /// never returned by any endpoint, never logged. It is NULL only for the
 /// DEFERRED social-login path (Apple/Google — no such accounts exist in W2;
 /// reserved seam per the contract note §4).
@@ -135,7 +135,7 @@ model User {
 
   /// Salted adaptive hash (PHC string, argon2id — ADR-0003). NULL reserved
   /// for the deferred social-login path only. Never exposed, never logged.
-  passwordHash String? @map("password_hash") @db.Text
+  passwordHash String? @map("password") @db.Text
 
   /// Account lifecycle state (PRD §17). W2 only ever writes 'active'; the
   /// closure states are reserved structurally for the W6 lifecycle module.
@@ -146,7 +146,7 @@ model User {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   /// Touched on credential changes (rehash-on-login). Column-level UPDATE
-  /// grants cover password_hash and updated_at only — identity columns are
+  /// grants cover password and updated_at only — identity columns are
   /// immutable (I1).
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 

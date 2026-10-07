@@ -199,7 +199,7 @@ beforeAll(async () => {
     expect(response.text).toBe('{"status":"accepted"}');
   }
   await db.pool.query(
-    'INSERT INTO users (email, username, phone, password_hash, status) VALUES ($1, $2, $3, $4, $5)',
+    'INSERT INTO users (email, username, phone, password, status) VALUES ($1, $2, $3, $4, $5)',
     [
       CLOSED_EMAIL,
       's4_closed',

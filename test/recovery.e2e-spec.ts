@@ -432,8 +432,8 @@ describe('recovery completion — the happy path revokes everything (§1/§2)', 
     expect(revokedFlags[1]).not.toBeNull();
     expect(revokedFlags[2]).toBeNull(); // the fresh session
 
-    const credential = await adminQuery(db, 'SELECT password_hash FROM users WHERE email = $1', [USER_RAYAN.email]);
-    const hash = (credential.rows[0] as { password_hash: string }).password_hash;
+    const credential = await adminQuery(db, 'SELECT password FROM users WHERE email = $1', [USER_RAYAN.email]);
+    const hash = (credential.rows[0] as { password: string }).password;
     expect(hash).toMatch(/^\$argon2id\$v=19\$/u);
     expect(hash).not.toContain(NEW_PASSWORD);
 
