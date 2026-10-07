@@ -44,6 +44,12 @@ pnpm start        # compiled production mode (dist/src/main.js)
 
 Every error response is an RFC 9457-style problem-details envelope with a code from the frozen registry (`docs/api/conventions.md` §4) and a `requestId` (echoed `X-Request-Id` or generated).
 
+### W2 identity (contract frozen — `docs/api/wave-02-contract.md`)
+
+The identity wave's session semantics, endpoint shapes, lockout/enumeration observables, and per-table isolation decisions are frozen in the wave-02 contract note (`docs/api/wave-02-contract.md` in the Kal docs repo). This repository serves the `w2` fixture document additively (`GET /contracts/w2` — every `w1` entry retained byte-stably; `w1` itself untouched). The identity endpoints described there are implemented by the Stage-2 lanes (`src/identity/**`); until those merge, the frozen fixtures are declaration, not implementation — the fixture round-trip suite pins the served document, and the implementing lanes pin their responses against it.
+
+Identity schema (migration `20261007101836_identity_core`): `users` (three unique sign-in identifiers + PHC `password_hash` per ADR-0003), `sessions` (rotating refresh secret, generation counter), `recovery_tickets` (single-use hashed tickets), `auth_attempt_counters` (platform-owned throttle digests). Grants follow the least-privilege table pattern; **RLS is declined per table** (see the table in "Roles & row-level security" above).
+
 ## Checks
 
 ```bash
@@ -117,6 +123,16 @@ Wave 1 establishes the structural-isolation pattern every later wave copies:
 
   The `app.user_id` GUC is **transaction-local**: `SELECT set_config('app.user_id', <user uuid>, true)` inside the transaction that queries. Unset ⇒ NULL ⇒ **zero rows, ever**. Malformed ⇒ cast error ⇒ fail closed. Note: `set_config(..., true)` outside an explicit transaction reverts immediately (autocommit) — application code must always set it inside the transaction. Caveat pinned by the harness (F1): on a session that has set the GUC once, an unset GUC reads back `''` (not NULL) ⇒ 22P02 cast error — still fail-closed.
 - **User-id immutability**: `user_id` has no UPDATE grant (column-level grants cover data columns only), and the RLS `WITH CHECK` rejects any write whose `user_id` differs from the context — moving a row to another user is structurally impossible.
+- **W2 identity tables — RLS DECLINED per table (documented decision, not an omission).** ADR-0002 scopes RLS narrowly to consumer-owned **health-data** tables; identity tables are non-health and stay on the I1–I3 layers (app-level user-scoped predicates + structural constraints), attacked behaviorally by the A/B/C suites. The per-table decision and rationale:
+
+  | Table | Decision | Rationale (ADR-0002-consistent) |
+  |---|---|---|
+  | `users` | **Decline** | Identity anchor, not a health table. Isolation = I1/I2 predicates in the identity module + structural uniqueness; a leak of account-existence metadata is bounded by the non-disclosure observables (contract note §3), not by row filtering. |
+  | `sessions` | **Decline** | Owned child (immutable `user_id` FK), content limited to session metadata + hashed refresh secret — no health data. User-scoped predicates are mandatory in the module; the `user_id` column carries no UPDATE grant. |
+  | `recovery_tickets` | **Decline** | Owned child; stores only SHA-256 ticket hashes. Same I1–I3 posture as sessions. |
+  | `auth_attempt_counters` | **Decline (outside scope)** | Platform-owned throttle state keyed by digests — no `user_id` column at all, so no per-user row security applies; not user-owned data. |
+
+  Structure is pinned by `test/integration/identity-schema.itspec.ts` (no `relrowsecurity`, zero `pg_policies` rows, column-grant scoping).
 - **Append-only audit** (`audit_events`, platform-owned, deliberately outside RLS scope): no UPDATE/DELETE grants for any role **and** a `BEFORE UPDATE/DELETE` trigger that raises — the trigger binds even the table owner; only a superuser could bypass it (break-glass territory, audited).
 - **Compound user-reference pattern for later waves (I3):** owned child tables carry the per-plane user id column and expose a composite key so cross-user references are structurally impossible:
 
