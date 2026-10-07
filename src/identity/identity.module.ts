@@ -26,12 +26,20 @@ import { IdentityConfigService } from './identity.config.js';
 import { IdentityController } from './identity.controller.js';
 import { IdentityService } from './identity.service.js';
 import { JwtUserContextResolver } from './jwt-user-context.resolver.js';
+import { DevMailAdapter } from './mail/dev-mail.adapter.js';
+import { KAL_MAIL_PORT } from './mail/mail.port.js';
 import { PasswordHasherService } from './password-hasher.service.js';
+// s2b-recovery registrations (additive): the account-recovery surface plus the
+// `KalMailPort` seam bound to its single shipped dev/no-op adapter (contract
+// note §4 — no mail provider is selected; founder decision E2 stays open).
+import { RecoveryController } from './recovery/recovery.controller.js';
+import { RecoveryService } from './recovery/recovery.service.js';
+import { RecoveryTicketService } from './recovery/recovery-ticket.service.js';
 import { TokenService } from './token.service.js';
 
 @Module({
   imports: [RequestContextMenu, DbModule, AuditModule],
-  controllers: [IdentityController],
+  controllers: [IdentityController, RecoveryController],
   providers: [
     {
       provide: USER_CONTEXT_RESOLVER,
@@ -49,6 +57,14 @@ import { TokenService } from './token.service.js';
     IdentityService,
     JwtUserContextResolver,
     IdentityBearerGuard,
+    // s2b-recovery (additive): recovery command service + ticket secrets + the
+    // mail seam's dev/no-op adapter as the default `KAL_MAIL_PORT` binding.
+    RecoveryTicketService,
+    RecoveryService,
+    {
+      provide: KAL_MAIL_PORT,
+      useClass: DevMailAdapter,
+    },
   ],
   exports: [
     // The W2 resolver override (wave-01 seam) + its class for direct injection.
