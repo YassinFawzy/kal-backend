@@ -18,10 +18,13 @@
  *     outliers); assertions compare median deltas against tolerances set
  *     from measured margins with ≥2× headroom (recorded in the MR). Raw
  *     samples are printed for the evidence pack.
- *   - The recovery REQUEST path is measured and REPORTED but its delta is
- *     NOT asserted small: the implementation documents a known, accepted
- *     asymmetry there (the known path's INSERT + audit + mail work). That is
- *     supervisor finding F-S4-1b — routed, never fixed in this lane.
+ *   - The recovery REQUEST path is asserted within tolerance like the rest
+ *     (round-2 strengthening): pre-fix it measured a stable ~1.8–2.3× gap
+ *     (F-S4-1b, routed); the eq-fix lane's issuance mirror (fba321d, merged
+ *     b31f15c) equalized it — s4 re-measured |median delta| ≤ 1.20 ms across
+ *     five fresh runs (direction flips between runs — no oracle side) and
+ *     now ASSERTS the equalized invariant. History note retained for
+ *     provenance: this case originally measured-and-reported, never blessed.
  *
  * Every response in a measured pair is ALSO raw-byte-compared (pinned
  * X-Request-Id) — timing is never asserted on bodies that differ.
@@ -55,6 +58,10 @@ const TOLERANCES = {
   lockedMedianDeltaMs: 10,
   /** signup fresh vs duplicate: same hash-then-transaction shape. */
   signupMedianDeltaMs: 30,
+  /** recovery request known vs unknown post-equalization (F-S4-1b fixed by
+   *  fba321d): fresh margins |median delta| ≤ 1.20 ms over 5 runs — ceiling
+   *  = 3 ms (2.5× the worst observed, still below the worst pre-fix median). */
+  recoveryMedianDeltaMs: 3,
 } as const;
 
 const ROUNDS_SIGNIN = 11;
@@ -311,12 +318,26 @@ describe('timing-equalized enumeration observables (contract §3)', () => {
     );
   });
 
-  it('F-S4-1b (measured, REPORTED — not asserted small): recovery request known vs unknown; bodies raw-identical', async () => {
-    // The frozen observable is the byte-identical `{"status":"accepted"}` —
-    // asserted below. The implementation documents a known work asymmetry on
-    // the known path (ticket INSERT + audit append + delivery) that the
-    // unknown path skips; this case MEASURES it for the routed finding and
-    // asserts nothing about the delta's size (never silently blessed here).
+  it('F-S4-1b (post-fix, ASSERTED): recovery request known vs unknown — equalized medians within tolerance; bodies raw-identical', async () => {
+    // Pre-fix this case measured-and-reported a ~1.8–2.3× gap (F-S4-1b,
+    // routed — never blessed here). The eq-fix lane's issuance mirror
+    // (fba321d, merged b31f15c) gives the unknown path the known path's
+    // INSERT shape + a committed 1-row pool UPDATE + the real COMMIT WAL
+    // flush; s4 re-measured on the fixed tree and now ASSERTS the equalized
+    // invariant. The frozen observable stays the byte-identical
+    // `{"status":"accepted"}` — asserted below alongside the timing bound.
+    // Discarded warmup pair first: the mirror's supporting state (sentinel
+    // user + 256-row pool) is bootstrapped lazily on the FIRST unknown
+    // request of a process — that one-time cost must not land in a sample.
+    const warmRecUnknown = await pin(request(app.getHttpServer()).post('/identity/recovery/request'))
+      .set('X-Device-Id', freshDevice('warm-rec-unknown'))
+      .send({ identifier: UNKNOWN_EMAIL });
+    const warmRecKnown = await pin(request(app.getHttpServer()).post('/identity/recovery/request'))
+      .set('X-Device-Id', freshDevice('warm-rec-known'))
+      .send({ identifier: KNOWN_EMAIL });
+    expect(warmRecUnknown.status).toBe(200);
+    expect(warmRecKnown.status).toBe(200);
+
     const unknownSamples: number[] = [];
     const knownSamples: number[] = [];
     const acceptedText = '{"status":"accepted"}';
@@ -341,15 +362,18 @@ describe('timing-equalized enumeration observables (contract §3)', () => {
     }
 
     const { medianA, medianB, delta } = reportMargins(
-      'recovery request known vs unknown (F-S4-1b evidence)',
+      'recovery request known vs unknown (F-S4-1b, post-fix asserted)',
       knownSamples,
       unknownSamples,
       'known',
       'unknown',
     );
-    // Evidence anchors for the MR (asserted only to be self-consistent):
-    expect(Number.isFinite(medianA)).toBe(true);
-    expect(Number.isFinite(medianB)).toBe(true);
-    process.stdout.write(`[timing] F-S4-1b summary: known median ${medianA.toFixed(2)}ms vs unknown ${medianB.toFixed(2)}ms — delta ${delta.toFixed(2)}ms (routed)\n`);
+    expect(
+      delta,
+      `recovery-request median delta ${delta.toFixed(2)}ms must be ≤ ${TOLERANCES.recoveryMedianDeltaMs}ms (equalized by the fba321d issuance mirror)`,
+    ).toBeLessThanOrEqual(TOLERANCES.recoveryMedianDeltaMs);
+    process.stdout.write(
+      `[timing] F-S4-1b summary: known median ${medianA.toFixed(2)}ms vs unknown ${medianB.toFixed(2)}ms — delta ${delta.toFixed(2)}ms (asserted ≤ ${TOLERANCES.recoveryMedianDeltaMs}ms)\n`,
+    );
   });
 });
