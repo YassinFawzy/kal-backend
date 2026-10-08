@@ -48,36 +48,57 @@ export class DiaryDeltaProvider implements TrackingDeltaProvider {
     if (!Number.isFinite(take) || take < 1) {
       throw new RangeError('diary delta: limit must be a positive integer (sync owns clamping — seam violation)');
     }
-    const where: Prisma.DiaryEntryWhereInput = cursor === null
-      ? { userId: ctx.userId } // first pull: the feed starts at its beginning
-      : this.strictlyAfter(cursor, ctx);
+    // Malformed cursor states are refused HERE (fail-closed seam violation)
+    // before any SQL — a malformed instant reaching the database would abort
+    // the caller's transaction as a raw 22007 instead of a clean refusal.
+    if (cursor !== null) {
+      parseCursorInstant(cursor.updatedAt);
+      if (typeof cursor.entityId !== 'string' || cursor.entityId.length === 0) {
+        throw new RangeError('diary delta: malformed cursor entity (sync owns cursor verification — seam violation)');
+      }
+    }
+    // SUPERVISOR AMENDMENT 2 (2026-10-08): millisecond-truncated keyset page
+    // mirroring the foods repository pattern. timestamptz(6) rows can carry
+    // microseconds the ms-precision cursor instants cannot express; a raw
+    // updatedAt keyset lets sub-ms rows reappear across pages. Ordering and
+    // the strictly-after filter both key on date_trunc('millisecond', …) so
+    // paging is exact; full rows hydrate through the caller-scoped typed
+    // client (page ids → findMany) — hydration order never matters.
+    const page = await tx.$queryRaw<{ id: string; updatedAt: Date; deletedAt: Date | null }[]>`
+      SELECT id::text AS "id", updated_at AS "updatedAt", deleted_at AS "deletedAt"
+      FROM diary_entries
+      WHERE user_id = ${ctx.userId}::uuid ${
+        cursor === null
+          ? Prisma.empty
+          : Prisma.sql`AND (date_trunc('millisecond', updated_at), id::text) > (${cursor.updatedAt}::timestamptz, ${cursor.entityId}::text)`
+      }
+      ORDER BY date_trunc('millisecond', updated_at) ASC, id::text ASC
+      LIMIT ${take}`;
     const rows = await tx.diaryEntry.findMany({
-      where,
-      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
-      take,
+      where: { userId: ctx.userId, id: { in: page.map((row) => row.id) } },
     });
-
-    const changes = rows.map<DeltaChange>((row) => {
+    const rowById = new Map(rows.map((row) => [row.id, row]));
+    const changes = page.flatMap((pageRow): DeltaChange[] => {
+      const row = rowById.get(pageRow.id);
+      if (row === undefined) {
+        return []; // unobservable: page ids come from the same scoped table
+      }
       const deleted = row.deletedAt !== null;
-      return {
+      return [{
         kind: this.kind,
         entityId: row.id,
-        change: deleted ? 'delete' : 'upsert',
-        updatedAt: row.updatedAt.toISOString(),
+        change: deleted ? ('delete' as const) : ('upsert' as const),
+        updatedAt: msIso(row.updatedAt),
         ...(deleted ? {} : { payload: rowToSnapshot(row) }),
-      };
+      }];
     });
     return { changes, exhausted: changes.length < take };
   }
+}
 
-  /** Keyset continuation: rows strictly after `(cursor.updatedAt, cursor.entityId)` within this kind. */
-  private strictlyAfter(cursor: DeltaCursorState, ctx: SyncOpContext): Prisma.DiaryEntryWhereInput {
-    const cursorUpdatedAt = parseCursorInstant(cursor.updatedAt);
-    return {
-      userId: ctx.userId,
-      OR: [{ updatedAt: { gt: cursorUpdatedAt } }, { updatedAt: { equals: cursorUpdatedAt }, id: { gt: cursor.entityId } }],
-    };
-  }
+/** Millisecond-precise ISO instant (matches the truncated cursor ordering). */
+function msIso(instant: Date): string {
+  return new Date(Math.floor(instant.getTime() / 1000) * 1000).toISOString();
 }
 
 function parseCursorInstant(value: string): Date {

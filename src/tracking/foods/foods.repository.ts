@@ -380,7 +380,7 @@ export class FoodsRepository {
       WHERE user_id = ${userId}::uuid ${cursorFilter(cursor)}
       ORDER BY date_trunc('millisecond', updated_at) ASC, id::text ASC
       LIMIT ${limit + 1}`;
-    return { rows: rows.slice(0, limit), exhausted: rows.length > limit };
+    return { rows: rows.slice(0, limit), exhausted: rows.length <= limit }; // amend-2: TRUE = drained (probe-based)
   }
 
   async favoriteChangePage(
@@ -394,7 +394,7 @@ export class FoodsRepository {
       WHERE user_id = ${userId}::uuid ${cursorFilter(cursor)}
       ORDER BY date_trunc('millisecond', updated_at) ASC, id::text ASC
       LIMIT ${limit + 1}`;
-    return { rows: rows.slice(0, limit), exhausted: rows.length > limit };
+    return { rows: rows.slice(0, limit), exhausted: rows.length <= limit }; // amend-2: TRUE = drained (probe-based)
   }
 }
 
