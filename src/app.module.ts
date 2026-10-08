@@ -16,7 +16,8 @@ import { SyncModule } from './sync/sync.module.js';
  * modules plus the W2 identity module, which re-exports the request-context
  * plumbing and overrides `USER_CONTEXT_RESOLVER` with the JWT-backed
  * resolver (I2 — see identity.module.ts); hosting authenticated routes
- * means importing IdentityModule.
+ * means importing IdentityModule. W3 adds the tracking module (s2a/s2c)
+ * and the sync module — ingestion (s2d) + delta pull (s2e) in one module.
  */
 @Module({
   imports: [
