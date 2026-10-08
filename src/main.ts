@@ -19,6 +19,22 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
   const config = app.get(ConfigService);
   app.enableShutdownHooks();
+  // CORS — browser origins allowed to call the API (Expo web dev servers by
+  // default; production sets CORS_ALLOWED_ORIGINS to the real web origins).
+  // Fail-closed on malformed entries (I15 spirit): an entry that is not an
+  // http(s) origin refuses the boot. No wildcard: bearer tokens travel in
+  // headers, and an explicit allowlist is the safe default. Supervisor-blessed
+  // §8, 2026-10-08 — recorded in wave-03 ledger §10.
+  const corsOrigins = (process.env['CORS_ALLOWED_ORIGINS'] ?? 'http://localhost:8081,http://localhost:19006')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  for (const origin of corsOrigins) {
+    if (!/^https?:\/\/[a-z0-9.:-]+$/iu.test(origin)) {
+      throw new Error(`config: invalid configuration, refusing to start — CORS_ALLOWED_ORIGINS entries must be http(s) origins.`);
+    }
+  }
+  app.enableCors({ origin: corsOrigins });
   await app.listen(config.port);
 }
 
