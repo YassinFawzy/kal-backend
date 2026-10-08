@@ -27,8 +27,9 @@ import { TrackingModule } from './tracking/tracking.module.js';
     SchedulerModule,
     HealthModule,
     ContractsModule,
-    // W3 tracking module (additive registration per merge order — lane s2a):
-    // foods catalog surface + the frozen sync↔tracking seam implementations.
+    // W3 tracking module (additive registration per merge order — lanes
+    // s2a foods + s2c diary): the tracking surfaces + the frozen
+    // sync↔tracking seam implementations.
     TrackingModule,
   ],
   controllers: [],

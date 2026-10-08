@@ -1,9 +1,10 @@
 /**
  * Kal — tracking module (wave-03; ARCHITECTURE §9 bounded context).
  *
- * Owns the foods catalog surface (this lane, s2a: search/detail/barcode/user
+ * Owns the foods catalog surface (lane s2a: search/detail/barcode/user
  * foods/favorites + the shared limiter + the seed manifest's execution
- * module), the diary surface (s2c), and the frozen `sync` ↔ `tracking` seam
+ * module), the diary surface (lane s2c: entries with frozen snapshots, the
+ * day read, rollups), and the frozen `sync` ↔ `tracking` seam
  * implementations (§4): the op handlers and delta providers sync registers
  * at ITS module init (`registerOpHandler` / `registerDeltaProvider` — sync
  * owns the registries).
@@ -12,7 +13,7 @@
  * its exported services/seam implementations; tracking never queries another
  * module's tables; user-scoped work runs only through the sanctioned service
  * layer with a validated UserContext under the per-transaction posture
- * (`app-role-tx.ts` — F1 pool guidance: never session-level GUCs).
+ * (`foods/app-role-tx.ts` — F1 pool guidance: never session-level GUCs).
  *
  * Normalization binding: the frozen §7 pipeline is consumed through the
  * `TRACKING_NORMALIZER` port, bound to lane s2b's merged pure module
@@ -22,6 +23,12 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '../config/config.service.js';
 import { DbModule } from '../db/db.module.js';
 import { IdentityModule } from '../identity/identity.module.js';
+import { DiaryDeltaProvider } from './diary/diary-delta.service.js';
+import { DiaryEntryOpHandler } from './diary/diary-apply.service.js';
+import { DiaryFoodReferenceValidator } from './diary/diary-food-reference.port.js';
+import { DiaryReadController } from './diary/diary-read.controller.js';
+import { DiaryReadService } from './diary/diary-read.service.js';
+import { DiaryRollupsService } from './diary/diary-rollups.service.js';
 import { DevBarcodeLookupAdapter } from './foods/barcode/dev-off.adapter.js';
 import { KAL_BARCODE_LOOKUP } from './foods/barcode/barcode-lookup.port.js';
 import { FavoriteOpHandler } from './foods/favorite-op.handler.js';
@@ -37,7 +44,7 @@ import { UserFoodRateLimiter } from './foods/user-food-rate-limiter.js';
 
 @Module({
   imports: [DbModule, IdentityModule],
-  controllers: [FoodsController],
+  controllers: [FoodsController, DiaryReadController],
   providers: [
     {
       provide: TrackingConfigService,
@@ -67,6 +74,13 @@ import { UserFoodRateLimiter } from './foods/user-food-rate-limiter.js';
     FavoriteOpHandler,
     UserFoodDeltaProvider,
     FavoriteDeltaProvider,
+    // Lane s2c (diary): the §1.3 state machine + rollups, the §1.6 delta
+    // feed, and the §2 day-read surface (mutation-free by design).
+    DiaryRollupsService,
+    DiaryFoodReferenceValidator,
+    DiaryEntryOpHandler,
+    DiaryDeltaProvider,
+    DiaryReadService,
   ],
   exports: [
     // The frozen seam implementations (§4) — sync (s2d/s2e) registers these
@@ -75,6 +89,8 @@ import { UserFoodRateLimiter } from './foods/user-food-rate-limiter.js';
     FavoriteOpHandler,
     UserFoodDeltaProvider,
     FavoriteDeltaProvider,
+    DiaryEntryOpHandler,
+    DiaryDeltaProvider,
     TrackingConfigService,
   ],
 })
