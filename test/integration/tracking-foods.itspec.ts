@@ -424,10 +424,12 @@ describe('the shared limiter — SYNC path, two-config proofs (§1.7)', () => {
 describe('delta providers through the frozen seam (§1.6)', () => {
   it('pages are deterministic (updatedAt, id) ascending, strictly after the cursor; tombstones carry NO payload; exhausted flag walks to the end', async () => {
     // A has exactly two user-food rows: 4444… (tombstoned) and 6666…
-    // (Retry granola, active). Page of 2 ⇒ both, not exhausted.
+    // (Retry granola, active). Page of 2 ⇒ both, and EXHAUSTED (amend-2:
+    // probe-based — the limit+1 fetch found no extra row, so the feed is
+    // drained; TRUE = drained per the pinned polarity).
     const firstPage = await inUserScopeTx(prisma, CTX_A, (tx) => handlers.userFoodDelta.changesSince(null, 2, CTX_A, tx));
     expect(firstPage.changes).toHaveLength(2);
-    expect(firstPage.exhausted).toBe(false);
+    expect(firstPage.exhausted).toBe(true);
     for (const change of firstPage.changes) {
       expect(change.kind).toBe('user_food');
       if (change.change === 'upsert') {
@@ -440,13 +442,13 @@ describe('delta providers through the frozen seam (§1.6)', () => {
     const keys = firstPage.changes.map((change) => `${change.updatedAt}:${change.entityId}`);
     expect([...keys].sort()).toEqual(keys);
 
-    // Strictly after: the follow-up page is EMPTY and not exhausted (end of
-    // collection renders like any other page — conventions §2).
+    // Strictly after: the follow-up page is EMPTY and exhausted (drained —
+    // end of collection renders like any other page, conventions §2).
     const last = firstPage.changes[firstPage.changes.length - 1]!;
     const secondPage = await inUserScopeTx(prisma, CTX_A, (tx) =>
       handlers.userFoodDelta.changesSince({ updatedAt: last.updatedAt, entityId: last.entityId }, 2, CTX_A, tx));
     expect(secondPage.changes).toEqual([]);
-    expect(secondPage.exhausted).toBe(false);
+    expect(secondPage.exhausted).toBe(true);
 
     // The tombstoned 4444… entity propagates as a payload-less delete; the
     // active one as a full upsert snapshot.

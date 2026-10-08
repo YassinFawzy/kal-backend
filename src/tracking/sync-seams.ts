@@ -117,7 +117,15 @@ export interface DeltaCursorState {
 /** Delta assembly over the tracking module's own tables (contract §4). */
 export interface TrackingDeltaProvider {
   readonly kind: SyncOpKind;
-  /** Returns changes strictly after the cursor state, deterministic order, ≤ limit. */
+  /** Returns changes strictly after the cursor state, deterministic order, ≤ limit.
+   *
+   * `exhausted` polarity (SUPERVISOR AMENDMENT 2, 2026-10-08 — pinned after the
+   * two tracking lanes shipped opposite readings): **TRUE ⇔ the provider is
+   * DRAINED — no further changes exist strictly after the returned batch.**
+   * FALSE ⇔ more may exist (compose the next page). Implementations may be
+   * probe-based (know drained on a full final page) or conservative (report
+   * drained only on a short/empty page) — both are polarity-conformant; the
+   * composer treats an extra empty page as a normal page (conventions §2). */
   changesSince(
     cursor: DeltaCursorState | null,
     limit: number,
