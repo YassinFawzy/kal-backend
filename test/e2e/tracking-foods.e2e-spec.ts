@@ -414,7 +414,10 @@ describe('tracking.user-foods.create — validation', () => {
     expect(body.code).toBe('VALIDATION_FAILED');
     const fields = body.errors.map((error) => error.field);
     expect(fields).toContain('energyKcal');
-    expect(JSON.stringify(body)).not.toContain('-5');
+    // AMENDMENT 3 (F-S4A-3): scan only the value-echo surfaces — the old
+    // whole-body scan collided with random requestId UUIDs (~22% contain
+    // the literal '-5'), a CI coin-flip.
+    expect(JSON.stringify({ errors: body.errors, detail: body.detail })).not.toContain('-5');
   });
 
   it('macronutrient snapshot round-trips exactly (per-100 g, number serialization)', async () => {

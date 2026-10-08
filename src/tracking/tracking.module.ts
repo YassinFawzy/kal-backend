@@ -21,6 +21,7 @@
  */
 import { Module } from '@nestjs/common';
 import { ConfigService } from '../config/config.service.js';
+import { AuditModule } from '../audit/audit.module.js';
 import { DbModule } from '../db/db.module.js';
 import { IdentityModule } from '../identity/identity.module.js';
 import { DiaryDeltaProvider } from './diary/diary-delta.service.js';
@@ -43,7 +44,7 @@ import { UserFoodOpHandler } from './foods/user-food-op.handler.js';
 import { UserFoodRateLimiter } from './foods/user-food-rate-limiter.js';
 
 @Module({
-  imports: [DbModule, IdentityModule],
+  imports: [DbModule, IdentityModule, AuditModule],
   controllers: [FoodsController, DiaryReadController],
   providers: [
     {

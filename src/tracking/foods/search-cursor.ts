@@ -38,7 +38,12 @@ function tag(payload: string, userId: string, cursorKey: Buffer): string {
 
 /** Mints an opaque, user-bound cursor token for the given state. */
 export function encodeSearchCursor(state: SearchCursorState, userId: string, cursorKey: Buffer): string {
-  const payload = base64Url(Buffer.from(JSON.stringify(state), 'utf8'));
+  // AMENDMENT 3: the payload EMBEDS the user binding (`u`) so a tag-valid
+  // token presented under a foreign account is a server-known cross-tenant
+  // fact (I14 audit emit) — the binding previously lived only in the HMAC
+  // input, making the fact unextractable. Format is opaque server state
+  // (pre-launch: no client holds an old-format token).
+  const payload = base64Url(Buffer.from(JSON.stringify({ ...state, u: userId }), 'utf8'));
   return `${payload}.${tag(payload, userId, cursorKey)}`;
 }
 
@@ -79,9 +84,44 @@ export function decodeSearchCursor(
   if (
     (rank !== 0 && rank !== 1 && rank !== 2) ||
     typeof id !== 'string' ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(id)
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(id) ||
+    candidate['u'] !== userId
   ) {
     return null;
   }
   return { rank, id };
+}
+
+/**
+ * AMENDMENT 3 (I14 audit emit): returns the EMBEDDED user binding of a
+ * GENUINELY-MINTED token (tag valid FOR THAT BINDING) — null for garbage,
+ * tampered, or shape-invalid tokens. The caller uses this only as a
+ * side-channel audit signal when the binding ≠ the authenticated caller;
+ * it never changes any response byte (I7).
+ */
+export function inspectSearchCursor(token: string, cursorKey: Buffer): string | null {
+  const parts = token.split('.');
+  if (parts.length !== 2) {
+    return null;
+  }
+  const [payload, signature] = parts as [string, string];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return null;
+  }
+  const embedded = (parsed as Record<string, unknown>)['u'];
+  if (typeof embedded !== 'string') {
+    return null;
+  }
+  const expected = Buffer.from(tag(payload, embedded, cursorKey));
+  const presented = Buffer.from(signature);
+  if (expected.length !== presented.length || !timingSafeEqual(expected, presented)) {
+    return null;
+  }
+  return embedded;
 }

@@ -30,6 +30,7 @@
  */
 import { Module, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '../config/config.service.js';
+import { AuditModule } from '../audit/audit.module.js';
 import { DbModule } from '../db/db.module.js';
 import { IdentityModule } from '../identity/identity.module.js';
 import { DiaryEntryOpHandler } from '../tracking/diary/diary-apply.service.js';
@@ -52,7 +53,7 @@ import { SyncPullController } from './pull/sync-pull.controller.js';
 import { SyncPullService } from './pull/sync-pull.service.js';
 
 @Module({
-  imports: [IdentityModule, DbModule, TrackingModule],
+  imports: [IdentityModule, DbModule, TrackingModule, AuditModule],
   controllers: [SyncIngestionController, SyncPullController],
   providers: [
     {

@@ -49,6 +49,8 @@ function makeHarness(composed: ComposedPullPage) {
     registry,
     composer,
     cursors,
+    // AMENDMENT 3: audit stub — fire-and-forget append (never blocks/throws).
+    { append: async () => ({}) as never } as unknown as ConstructorParameters<typeof SyncPullService>[4],
   );
   return { service, postureQueries, composeCalls };
 }

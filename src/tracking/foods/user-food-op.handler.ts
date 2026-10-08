@@ -79,6 +79,16 @@ export class UserFoodOpHandler implements SyncOpHandler {
             clientUpdatedAt,
             lastOpId: op.opId,
           });
+          // AMENDMENT 3 (F-S4B-1, s4b soak finding): the serving set rides the
+          // SAME unit of work as the row — the offline create path previously
+          // dropped payload.servings (§1.6 full-snapshot fidelity + FR-012
+          // resolved gram weight; the REST create and the sync update path
+          // already did this).
+          await this.repository.insertUserFoodServings(tx, {
+            userId: ctx.userId,
+            userFoodId: op.entityId,
+            servings: validated.value.servings,
+          });
         } catch (error) {
           if (rawWriteConstraintClass(error) === 'unique') {
             return rejected('rejected_conflict', false); // concurrent same-entity create

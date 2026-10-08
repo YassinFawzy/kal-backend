@@ -24,6 +24,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import { KalProblemException } from '../../problems/kal-problem.exception.js';
 import { RequestContextService } from '../../request-context/request-context.service.js';
 import { PrismaService } from '../../db/prisma.service.js';
+import { createHash } from 'node:crypto';
+import { AuditService } from '../../audit/audit.service.js';
 import { inUserScopeTx, type TrackingTx } from './app-role-tx.js';
 import type { OffProductSnapshot } from './barcode/barcode-lookup.port.js';
 import { KAL_BARCODE_LOOKUP } from './barcode/barcode-lookup.port.js';
@@ -33,6 +35,7 @@ import { TrackingConfigService } from './tracking.config.js';
 import {
   decodeSearchCursor,
   encodeSearchCursor,
+  inspectSearchCursor,
 } from './search-cursor.js';
 import { UserFoodRateLimiter } from './user-food-rate-limiter.js';
 import { validateUserFoodPayload } from './user-food.payload.js';
@@ -63,6 +66,11 @@ export type BarcodeResolution =
   | { readonly result: 'resolved'; readonly food: FoodItemProjection & { readonly servingVariants: unknown } }
   | { readonly result: 'not_found' };
 
+/** Server-keyed opaque digest (I14 audit payloads — ids become digests). */
+function digestId(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 @Injectable()
 export class FoodsService {
   constructor(
@@ -71,6 +79,7 @@ export class FoodsService {
     private readonly limiter: UserFoodRateLimiter,
     private readonly config: TrackingConfigService,
     private readonly requestContext: RequestContextService,
+    private readonly audit: AuditService,
     @Inject(TRACKING_NORMALIZER) private readonly normalizer: TrackingNormalizer,
     @Inject(KAL_BARCODE_LOOKUP) private readonly barcodeLookup: { lookup(barcode: string): Promise<OffProductSnapshot | null> },
   ) {}
@@ -118,6 +127,21 @@ export class FoodsService {
       // malformed, truncated, or a cursor minted for another user (I7).
       cursorState = decodeSearchCursor(cursorRaw, userId, this.config.values.searchCursorKey);
       if (cursorState === null) {
+        // AMENDMENT 3 (I14 audit emit): a tag-valid search cursor minted for
+        // another account is a server-known cross-tenant fact — one
+        // fire-and-forget audit row (digests only; never awaited on the
+        // response path — I7), then the SAME byte-identical generic 400.
+        const embedded = inspectSearchCursor(cursorRaw, this.config.values.searchCursorKey);
+        if (embedded !== null && embedded !== userId) {
+          void this.audit
+            .append({
+              actor: 'system:tracking',
+              action: 'tracking.search_cursor.foreign_binding',
+              target: `cursor:${digestId(userId)}:${digestId(embedded)}`,
+              justification: 'A tag-valid search cursor minted for another account was presented by the caller (I14 cross-tenant signal; response unchanged).',
+            })
+            .catch(() => undefined);
+        }
         throw FoodsService.genericCursorRejection();
       }
     }

@@ -33,6 +33,7 @@ const PAYLOAD = {
 };
 
 interface RepoStubState {
+  servingsInserted: number;
   row: { deletedAt: Date | null; updatedAt: Date; lastOpId: string | null } | null;
   inserted: number;
   replaced: number;
@@ -40,13 +41,18 @@ interface RepoStubState {
 }
 
 function makeRepo(overrides: Partial<RepoStubState> = {}): { repo: FoodsRepository; state: RepoStubState } {
-  const state: RepoStubState = { row: null, inserted: 0, replaced: 0, tombstoned: 0, ...overrides };
+  const state: RepoStubState = { row: null, inserted: 0, replaced: 0, tombstoned: 0, servingsInserted: 0, ...overrides };
   const repo = {
     findUserFoodIncludingDeleted: () => Promise.resolve(state.row === null ? null : ({ id: ENTITY, ...state.row } as never)),
     insertUserFood: () => {
       state.inserted += 1;
       state.row = { deletedAt: null, updatedAt: new Date(T0), lastOpId: OP };
       return Promise.resolve(ENTITY);
+    },
+    insertUserFoodServings: (_tx: unknown, params: { servings: unknown[] }) => {
+      // AMENDMENT 3 (F-S4B-1 regression pin): create inserts the serving set.
+      state.servingsInserted += params.servings.length;
+      return Promise.resolve();
     },
     replaceUserFoodSnapshot: (_tx: unknown, params: { clientUpdatedAt: Date; opId: string }) => {
       state.replaced += 1;
@@ -88,6 +94,8 @@ describe('UserFoodOpHandler — §1.3 state machine', () => {
     expect(outcome).toEqual({ outcome: 'applied' });
     expect(calls.count).toBe(1);
     expect(state.inserted).toBe(1);
+    // F-S4B-1 regression: the create path inserts the payload's serving set.
+    expect(state.servingsInserted).toBe(op('create').payload?.servings?.length ?? 0);
   });
 
   it('create over an ACTIVE row ⇒ rejected_conflict; the limiter is NOT ticked, nothing inserted', async () => {
