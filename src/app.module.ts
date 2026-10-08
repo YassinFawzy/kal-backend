@@ -8,6 +8,7 @@ import { IdentityModule } from './identity/identity.module.js';
 import { ProblemsModule } from './problems/problems.module.js';
 import { RequestContextMiddleware } from './request-context/index.js';
 import { SchedulerModule } from './scheduler/scheduler.module.js';
+import { TrackingModule } from './tracking/tracking.module.js';
 
 /**
  * Kal API — NestJS modular monolith (ARCHITECTURE §6/§9). Phase 1 infra
@@ -26,6 +27,9 @@ import { SchedulerModule } from './scheduler/scheduler.module.js';
     SchedulerModule,
     HealthModule,
     ContractsModule,
+    // W3 tracking module (additive registration per merge order — lane s2a):
+    // foods catalog surface + the frozen sync↔tracking seam implementations.
+    TrackingModule,
   ],
   controllers: [],
   providers: [],
