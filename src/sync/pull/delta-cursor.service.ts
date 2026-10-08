@@ -28,7 +28,7 @@ import { Injectable } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { isUuid } from '../../request-context/user-context.js';
 import { SyncPullConfigService } from './sync-pull.config.js';
-import { isSyncEntityKind, type GlobalCursorPosition } from './seams.js';
+import { isSyncEntityKind, type GlobalCursorPosition, type SyncOpKind } from './seams.js';
 
 /** Payload version — rejects cursors minted by a different cursor scheme. */
 const CURSOR_VERSION = 1;
@@ -75,6 +75,26 @@ export class SyncDeltaCursorService {
    * never a distinguishing observable (I7).
    */
   verify(cursor: string, requestingUserId: string): GlobalCursorPosition | null {
+    const trusted = this.decodeTagValid(cursor);
+    if (trusted === null || trusted.u !== requestingUserId) {
+      return null;
+    }
+    return this.toPosition(trusted);
+  }
+
+  /**
+   * AMENDMENT 3 (I14 audit emit): the EMBEDDED user binding of a
+   * genuinely-minted cursor (tag-valid + shape-valid), regardless of the
+   * requesting user — null for anything else. Side-channel audit signal
+   * ONLY: never changes a response byte or awaits on the response path
+   * (I7 — a latency-detectable branch would be an authenticity oracle).
+   */
+  inspectBinding(cursor: string): string | null {
+    return this.decodeTagValid(cursor)?.u ?? null;
+  }
+
+  /** Tag-valid + shape-valid decode, trust-anchored on the HMAC tag. */
+  private decodeTagValid(cursor: string): CursorPayload | null {
     if (cursor.length === 0 || cursor.length > MAX_CURSOR_LENGTH) {
       return null;
     }
@@ -113,11 +133,6 @@ export class SyncDeltaCursorService {
     ) {
       return null;
     }
-    if (parsed.u !== requestingUserId) {
-      // The user binding is the authorization: a cursor minted for another
-      // account is indistinguishable from any other invalid cursor.
-      return null;
-    }
     // The instant must be the serialized ISO 8601 UTC form the feed serves
     // (providers re-parse it — a non-UTC or unparseable instant is invalid).
     if (!parsed.ts.endsWith('Z') || Number.isNaN(Date.parse(parsed.ts))) {
@@ -126,10 +141,17 @@ export class SyncDeltaCursorService {
     if (!isSyncEntityKind(parsed.k) || !isUuid(parsed.e)) {
       return null;
     }
+    return parsed;
+  }
+
+  /** The authenticated per-kind position (verify path — binding checked). */
+  private toPosition(payload: CursorPayload): GlobalCursorPosition {
     return {
-      updatedAt: parsed.ts,
-      kind: parsed.k,
-      entityId: parsed.e,
+      updatedAt: payload.ts,
+      // decodeTagValid proved isSyncEntityKind(payload.k) — the narrow is
+      // structural, the interface carries the validated transport form.
+      kind: payload.k as SyncOpKind,
+      entityId: payload.e,
     };
   }
 }

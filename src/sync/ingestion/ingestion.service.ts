@@ -57,7 +57,9 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '../../../generated/prisma/client.ts';
 import { KalProblemException } from '../../problems/kal-problem.exception.js';
 import type { UserContext } from '../../request-context/user-context.js';
+import { createHash } from 'node:crypto';
 import { PrismaService } from '../../db/prisma.service.js';
+import { AuditService } from '../../audit/audit.service.js';
 import { buildAckEnvelope, serializeAckEnvelope, type AckResult } from './ack.js';
 import { canonicalJsonString, canonicalRequestDigest } from './canonical-json.js';
 import { IdempotencyKeyStore, type RecordedKeyResponse } from './idempotency-key.store.js';
@@ -85,6 +87,7 @@ export class SyncIngestionService {
     private readonly registry: OpHandlerRegistry,
     private readonly ledger: OpLedgerStore,
     private readonly keys: IdempotencyKeyStore,
+    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -112,26 +115,45 @@ export class SyncIngestionService {
     const digest = canonicalRequestDigest(rawBody);
 
     // 2..6 — one transaction per attempt; the boundary race converges below.
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        return await this.executeBatch(userContext, idempotencyKey, digest, parsed.value);
-      } catch (error) {
-        if (attempt === 0 && isUniqueViolation(error)) {
-          // Concurrent same-op/same-key push: this batch rolled back with
-          // zero partial state. The recorded key (if the racing request
-          // settled) replays byte-stably — or 409s on digest mismatch;
-          // otherwise ONE clean re-run (per-op dedupe ⇒ idempotent).
-          const replayed = await this.readRecordedAfterRace(userContext, idempotencyKey, digest);
-          if (replayed !== null) {
-            return replayed;
+    // AMENDMENT 3 (I14 audit emit): the FINAL rethrow of an entity-PK unique
+    // collision (B inserting an entity id owned elsewhere — the generic
+    // cause-indistinguishable 500) emits ONE fire-and-forget audit row from
+    // OUTSIDE the rolled-back transaction (tx omitted ⇒ separate connection;
+    // once per request, race-free; never awaited — response bytes unchanged).
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          return await this.executeBatch(userContext, idempotencyKey, digest, parsed.value);
+        } catch (error) {
+          if (attempt === 0 && isUniqueViolation(error)) {
+            // Concurrent same-op/same-key push: this batch rolled back with
+            // zero partial state. The recorded key (if the racing request
+            // settled) replays byte-stably — or 409s on digest mismatch;
+            // otherwise ONE clean re-run (per-op dedupe ⇒ idempotent).
+            const replayed = await this.readRecordedAfterRace(userContext, idempotencyKey, digest);
+            if (replayed !== null) {
+              return replayed;
+            }
+            continue;
           }
-          continue;
+          throw error;
         }
-        throw error;
       }
+      // Unreachable (the loop returns or throws on both attempts).
+      throw new KalProblemException('INTERNAL_ERROR');
+    } catch (error) {
+      if (isEntityPkCollision(error)) {
+        void this.audit
+          .append({
+            actor: 'system:sync',
+            action: 'sync.ingest.entity_collision',
+            target: `entity:${digestId(userContext.userId)}:${firstEntityIdFrom(parsed.value)}`,
+            justification: 'A sync batch insert collided with a globally-unique entity id owned elsewhere (I14 cross-tenant signal; generic 500 unchanged).',
+          })
+          .catch(() => undefined);
+      }
+      throw error;
     }
-    // Unreachable (the loop returns or throws on both attempts).
-    throw new KalProblemException('INTERNAL_ERROR');
   }
 
   // ---------------------------------------------------------------------------
@@ -314,4 +336,28 @@ function ackFromRecorded(recorded: RecordedKeyResponse): IngestionAck {
 
 function isUniqueViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
+
+/** Server-keyed opaque digest (I14 audit payloads — ids become digests). */
+function digestId(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * AMENDMENT 3: an entity-PK unique collision — the hostile cross-tenant cell
+ * (B inserting an entity id owned elsewhere). Distinguished from the benign
+ * same-key/dedupe races by the `_pkey` constraint class (dedupe and
+ * idempotency uniques are `_key`-suffixed); typed-Prisma P2002s carry the
+ * constraint in meta.
+ */
+function isEntityPkCollision(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
+    return false;
+  }
+  return JSON.stringify(error.meta ?? {}).includes('_pkey');
+}
+
+/** The first entity id in the batch (audit target member — envelope-validated UUID, unguessable). */
+function firstEntityIdFrom(batch: { ops: ReadonlyArray<{ entityId: string }> }): string {
+  return batch.ops[0]?.entityId ?? 'unknown';
 }

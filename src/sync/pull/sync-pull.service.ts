@@ -18,14 +18,21 @@
  * (module gate); kinds without a registered provider contribute nothing.
  */
 import { Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import type { Prisma } from '../../../generated/prisma/client.ts';
 import { PrismaService } from '../../db/prisma.service.js';
+import { AuditService } from '../../audit/audit.service.js';
 import { KalProblemException } from '../../problems/kal-problem.exception.js';
 import { isUuid } from '../../request-context/user-context.js';
 import { SyncDeltaComposer, type ComposedPullPage } from './delta-composer.service.js';
 import { SyncDeltaCursorService } from './delta-cursor.service.js';
 import { SyncDeltaRegistry } from './delta-registry.js';
 import type { GlobalCursorPosition, SyncOpContext } from './seams.js';
+
+/** Server-keyed opaque digest (I14 audit payloads — ids become digests). */
+function digestId(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
 
 /** The frozen pull envelope (note §1.6). */
 export interface SyncPullPage {
@@ -42,6 +49,7 @@ export class SyncPullService {
     private readonly registry: SyncDeltaRegistry,
     private readonly composer: SyncDeltaComposer,
     private readonly cursors: SyncDeltaCursorService,
+    private readonly audit: AuditService,
   ) {}
 
   async pull(userId: string, rawCursor: string | null, rawLimit: string | null): Promise<SyncPullPage> {
@@ -59,6 +67,22 @@ export class SyncPullService {
       }
       cursor = this.cursors.verify(rawCursor, userId);
       if (cursor === null) {
+        // AMENDMENT 3 (I14 audit emit): a signature-VALID cursor minted for
+        // another account is a server-known cross-tenant fact — emit ONE
+        // fire-and-forget audit row (NEVER awaited: a latency-detectable
+        // branch would be an authenticity oracle; failure-tolerant), digests
+        // only, then reject with the SAME byte-identical generic 400 below.
+        const embedded = this.cursors.inspectBinding(rawCursor);
+        if (embedded !== null && embedded !== userId) {
+          void this.audit
+            .append({
+              actor: 'system:sync',
+              action: 'sync.cursor.foreign_binding',
+              target: `cursor:${digestId(userId)}:${digestId(embedded)}`,
+              justification: 'A signature-valid delta cursor minted for another account was presented by the caller (I14 cross-tenant signal; response unchanged).',
+            })
+            .catch(() => undefined);
+        }
         // One generic body for every cursor failure class (conventions §2):
         // foreign user, tampered, truncated, malformed — indistinguishable.
         throw new KalProblemException('VALIDATION_FAILED');
