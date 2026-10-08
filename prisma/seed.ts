@@ -20,7 +20,7 @@
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../generated/prisma/client.ts";
-import { SEED_FOODS } from "./seed-manifest.ts";
+import { applyFoodCatalogSeed } from "./seed-apply.ts";
 
 /** Fixture user A — synthetic UUID reserved for fixtures, not a real account. */
 const FIXTURE_USER_A = "00000000-0000-4000-8000-0000000000a1";
@@ -114,73 +114,13 @@ async function main(): Promise<void> {
   const weights = await prisma.weightLog.count();
   const audits = await prisma.auditEvent.count();
 
-  // Wave 3 — curated Egyptian core pack (contract note §8). Values are
-  // ENGINEERING-INITIAL pending founder nutrition review (ledger §7-E2);
-  // ids are the manifest's fixed synthetic UUIDs so re-runs upsert and both
-  // repositories reference identical ids. The platform catalog tables are
-  // RLS-declined (no user scope), so the seed's admin connection writes them
-  // without any GUC setup — that is the documented posture, not an accident.
-  for (const food of SEED_FOODS) {
-    await prisma.food.upsert({
-      where: { id: food.id },
-      update: {
-        type: food.type,
-        provenance: food.provenance,
-        licensePartition: "proprietary",
-        nameEn: food.nameEn,
-        nameEnNormalized: food.nameEnNormalized,
-        nameAr: food.nameAr,
-        nameArNormalized: food.nameArNormalized,
-        aliases: [...food.aliases],
-        aliasesNormalized: [...food.aliasesNormalized],
-        energyKcal: food.energyKcal,
-        proteinG: food.proteinG,
-        carbsG: food.carbsG,
-        fatG: food.fatG,
-      },
-      create: {
-        id: food.id,
-        type: food.type,
-        provenance: food.provenance,
-        licensePartition: "proprietary",
-        nameEn: food.nameEn,
-        nameEnNormalized: food.nameEnNormalized,
-        nameAr: food.nameAr,
-        nameArNormalized: food.nameArNormalized,
-        aliases: [...food.aliases],
-        aliasesNormalized: [...food.aliasesNormalized],
-        energyKcal: food.energyKcal,
-        proteinG: food.proteinG,
-        carbsG: food.carbsG,
-        fatG: food.fatG,
-      },
-    });
-    for (const variant of food.servingVariants) {
-      await prisma.servingVariant.upsert({
-        where: { id: variant.id },
-        update: {
-          foodId: food.id,
-          labelEn: variant.labelEn,
-          labelAr: variant.labelAr,
-          grams: variant.grams,
-          isDefault: variant.isDefault,
-        },
-        create: {
-          id: variant.id,
-          foodId: food.id,
-          labelEn: variant.labelEn,
-          labelAr: variant.labelAr,
-          grams: variant.grams,
-          isDefault: variant.isDefault,
-        },
-      });
-    }
-  }
+  // Wave 3 — curated Egyptian core pack (contract note §8), applied by the
+  // extracted seed-execution module (prisma/seed-apply.ts — the same code the
+  // integration suite drives for its idempotence/fidelity proofs).
+  const catalog = await applyFoodCatalogSeed(prisma);
 
-  const foods = await prisma.food.count();
-  const variants = await prisma.servingVariant.count();
   console.log(
-    `seed: fixtures in place (weight_log=${weights}, audit_events=${audits}, foods=${foods}, serving_variants=${variants})`,
+    `seed: fixtures in place (weight_log=${weights}, audit_events=${audits}, foods=${catalog.foods}, serving_variants=${catalog.servingVariants})`,
   );
 }
 
