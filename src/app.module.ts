@@ -9,6 +9,7 @@ import { ProblemsModule } from './problems/problems.module.js';
 import { RequestContextMiddleware } from './request-context/index.js';
 import { SchedulerModule } from './scheduler/scheduler.module.js';
 import { TrackingModule } from './tracking/tracking.module.js';
+import { SyncModule } from './sync/sync.module.js';
 
 /**
  * Kal API — NestJS modular monolith (ARCHITECTURE §6/§9). Phase 1 infra
@@ -31,6 +32,8 @@ import { TrackingModule } from './tracking/tracking.module.js';
     // s2a foods + s2c diary): the tracking surfaces + the frozen
     // sync↔tracking seam implementations.
     TrackingModule,
+    // w03-s2d (additive): the sync ingestion write path (POST /sync/ops).
+    SyncModule,
   ],
   controllers: [],
   providers: [],
