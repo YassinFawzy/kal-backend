@@ -24,7 +24,7 @@
  * preservation).
  */
 import { canonicalJsonString } from './canonical-json.js';
-import type { RejectionCode } from './sync-seams.js';
+import type { RejectionCode } from '../../tracking/sync-seams.js';
 
 export type AckOutcome = 'applied' | 'duplicate' | 'rejected';
 

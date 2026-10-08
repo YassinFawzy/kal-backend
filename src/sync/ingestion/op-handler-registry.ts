@@ -13,13 +13,17 @@
  * `rejected` outcome (validation class) — never a crash, never a dynamic
  * import, never a direct table access outside sync's own op/dedupe tables
  * (ARCHITECTURE §9 module gates).
+ *
+ * The seam TYPES are the canonical declarations in
+ * `src/tracking/sync-seams.ts` (supervisor directive, post-s2c rebase:
+ * tracking implements, sync consumes — type-level import across the seam).
  */
 import { Injectable } from '@nestjs/common';
-import type { SyncEntityKind, SyncOpHandler } from './sync-seams.js';
+import type { SyncOpHandler, SyncOpKind } from '../../tracking/sync-seams.js';
 
 @Injectable()
 export class OpHandlerRegistry {
-  private readonly handlers = new Map<SyncEntityKind, SyncOpHandler>();
+  private readonly handlers = new Map<SyncOpKind, SyncOpHandler>();
 
   /** Module-init registration path (tracking lanes; test harness). */
   registerOpHandler(handler: SyncOpHandler): void {
@@ -30,12 +34,12 @@ export class OpHandlerRegistry {
   }
 
   /** The registered handler for a kind, or undefined (dispatch-miss ⇒ per-op rejected). */
-  lookup(kind: SyncEntityKind): SyncOpHandler | undefined {
+  lookup(kind: SyncOpKind): SyncOpHandler | undefined {
     return this.handlers.get(kind);
   }
 
   /** Currently registered kinds (observability; never client-facing). */
-  registeredKinds(): readonly SyncEntityKind[] {
+  registeredKinds(): readonly SyncOpKind[] {
     return [...this.handlers.keys()];
   }
 }

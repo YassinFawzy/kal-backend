@@ -17,10 +17,19 @@
  * Hosting authenticated routes means importing IdentityModule (the
  * sanctioned host pattern — it re-exports the request-context plumbing and
  * provides the JWT-backed `USER_CONTEXT_RESOLVER` + bearer guard).
+ *
+ * Seam registration (§4 — "sync owns the registries; tracking registers
+ * implementations at module init" is realized as: tracking EXPORTS the
+ * implementations; THIS module registers them at init). The delta-provider
+ * registrations belong to the delta-pull lane (w03-s2e).
  */
-import { Module } from '@nestjs/common';
+import { Module, OnModuleInit } from '@nestjs/common';
 import { DbModule } from '../db/db.module.js';
 import { IdentityModule } from '../identity/identity.module.js';
+import { DiaryEntryOpHandler } from '../tracking/diary/diary-apply.service.js';
+import { FavoriteOpHandler } from '../tracking/foods/favorite-op.handler.js';
+import { UserFoodOpHandler } from '../tracking/foods/user-food-op.handler.js';
+import { TrackingModule } from '../tracking/tracking.module.js';
 import { IdempotencyKeyStore } from './ingestion/idempotency-key.store.js';
 import { OpLedgerStore } from './ingestion/op-ledger.store.js';
 import { OpHandlerRegistry } from './ingestion/op-handler-registry.js';
@@ -29,7 +38,7 @@ import { SyncIngestionService } from './ingestion/ingestion.service.js';
 import { SyncConfigService } from './ingestion/sync.config.js';
 
 @Module({
-  imports: [IdentityModule, DbModule],
+  imports: [IdentityModule, DbModule, TrackingModule],
   controllers: [SyncIngestionController],
   providers: [
     {
@@ -51,4 +60,23 @@ import { SyncConfigService } from './ingestion/sync.config.js';
     OpHandlerRegistry,
   ],
 })
-export class SyncModule {}
+export class SyncModule implements OnModuleInit {
+  constructor(
+    private readonly registry: OpHandlerRegistry,
+    // The frozen §4 seam implementations, exported by tracking (s2a/s2c) —
+    // sync registers them into its OWN registries at ITS module init (the
+    // sanctioned direction: tracking implements, sync consumes).
+    private readonly userFoodHandler: UserFoodOpHandler,
+    private readonly favoriteHandler: FavoriteOpHandler,
+    private readonly diaryHandler: DiaryEntryOpHandler,
+  ) {}
+
+  onModuleInit(): void {
+    // The frozen entity-kind registry is EXHAUSTIVE for W3 (contract §1.1):
+    // all three kinds register here; a duplicate registration refuses the
+    // boot (registry integrity, fail fast).
+    this.registry.registerOpHandler(this.userFoodHandler);
+    this.registry.registerOpHandler(this.favoriteHandler);
+    this.registry.registerOpHandler(this.diaryHandler);
+  }
+}

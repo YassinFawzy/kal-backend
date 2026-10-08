@@ -18,33 +18,41 @@
  *  - LAYER 2 (the registry, ingestion service): an enum-valid kind whose
  *    handler is not REGISTERED dispatch-fails as a per-op `rejected`
  *    (validation class) — registry dispatch only; never a crash, never an
- *    improvised direct write (§4). In the assembled system tracking
- *    registers all three kinds at module init, so layer 2's miss case is a
- *    defensive seam, not a client-visible shape.
+ *    improvised direct write (§4). In the assembled system the sync module
+ *    registers tracking's three real handlers at init, so layer 2's miss
+ *    case is a defensive seam pinned at unit level, not a client-visible
+ *    shape.
  *
- * Primitives pinned here (all `§1.1`):
+ * The parsed envelope is the CANONICAL seam type (`SyncOpEnvelope` from
+ * `src/tracking/sync-seams.ts` — tracking implements, sync consumes; the
+ * sanctioned type-level direction). Primitives pinned here (all `§1.1`):
  *  - `opId`/`entityId`: UUIDs (the ledger columns are UUID — a non-UUID is a
  *    shape error, deterministically before any dedupe).
  *  - `clientUpdatedAt`: ISO 8601 UTC instant (`Z`/`±00:00` offset, calendar-
- *    valid); the exact client string is preserved on the envelope for
- *    handler-side LWW comparators (timestamptz(6) holds microseconds; JS
- *    Dates do not).
+ *    valid); carried on the envelope as the exact client-authored STRING —
+ *    handlers parse it (timestamptz(6) holds microseconds; JS Dates do not).
  *  - `localDate`: calendar-valid `YYYY-MM-DD`, REQUIRED on `diary_entry`
  *    ops, ABSENT on all others. Shape only — the server NEVER re-derives a
  *    diary day from receive/sync time (§1.8 day-boundary freeze).
  *  - `payload`: full entity snapshot object for create/update (same shape
- *    both — no patch semantics); ABSENT for delete.
+ *    both — no patch semantics); ABSENT for delete. Per-kind payload field
+ *    requirements are the handlers' frozen validation (supervisor ruling
+ *    2026-10-08); the one ENVELOPE-level rule is the canonical diary shape's
+ *    envelope↔payload `localDate` PARITY: a payload localDate that
+ *    DISAGREES with the envelope field is a whole-batch shape error (the
+ *    §1.2 "envelope field parity" class); payload-localDate ABSENCE stays
+ *    handler-domain.
  *  - `deviceId`: 1–128 chars — ordering metadata, never a credential.
  */
 import { isUuid } from '../../request-context/user-context.js';
 import type {
-  SyncEntityAction,
-  SyncEntityKind,
+  SyncOpAction,
   SyncOpEnvelope,
-} from './sync-seams.js';
+  SyncOpKind,
+} from '../../tracking/sync-seams.js';
 
-const ENTITY_KINDS: readonly SyncEntityKind[] = ['diary_entry', 'user_food', 'favorite'];
-const ENTITY_ACTIONS: readonly SyncEntityAction[] = ['create', 'update', 'delete'];
+const ENTITY_KINDS: readonly SyncOpKind[] = ['diary_entry', 'user_food', 'favorite'];
+const ENTITY_ACTIONS: readonly SyncOpAction[] = ['create', 'update', 'delete'];
 
 const LOCAL_DATE_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
 /**
@@ -163,24 +171,24 @@ function parseOp(value: unknown): SyncOpEnvelope | string {
     return 'opId';
   }
   const rawKind = record['kind'];
-  if (typeof rawKind !== 'string' || !ENTITY_KINDS.includes(rawKind as SyncEntityKind)) {
+  if (typeof rawKind !== 'string' || !ENTITY_KINDS.includes(rawKind as SyncOpKind)) {
     return 'kind';
   }
-  const kind = rawKind as SyncEntityKind;
+  const kind = rawKind as SyncOpKind;
   const entityId = record['entityId'];
   if (typeof entityId !== 'string' || !isUuid(entityId)) {
     return 'entityId';
   }
   const rawAction = record['action'];
-  if (typeof rawAction !== 'string' || !ENTITY_ACTIONS.includes(rawAction as SyncEntityAction)) {
+  if (typeof rawAction !== 'string' || !ENTITY_ACTIONS.includes(rawAction as SyncOpAction)) {
     return 'action';
   }
-  const action = rawAction as SyncEntityAction;
-  const clientUpdatedAtIso = record['clientUpdatedAt'];
+  const action = rawAction as SyncOpAction;
+  const clientUpdatedAt = record['clientUpdatedAt'];
   if (
-    typeof clientUpdatedAtIso !== 'string' ||
-    !UTC_INSTANT_PATTERN.test(clientUpdatedAtIso) ||
-    !isCalendarValidInstant(clientUpdatedAtIso)
+    typeof clientUpdatedAt !== 'string' ||
+    !UTC_INSTANT_PATTERN.test(clientUpdatedAt) ||
+    !isCalendarValidInstant(clientUpdatedAt)
   ) {
     return 'clientUpdatedAt';
   }
@@ -188,7 +196,7 @@ function parseOp(value: unknown): SyncOpEnvelope | string {
   // Field parity (§1.1): localDate REQUIRED on diary_entry ops, ABSENT on
   // all others; payload REQUIRED on create/update, ABSENT on delete.
   const rawLocalDate = record['localDate'];
-  let localDate: string | null = null;
+  let localDate: string | undefined;
   if (rawLocalDate !== undefined && rawLocalDate !== null) {
     if (
       kind !== 'diary_entry' ||
@@ -204,23 +212,21 @@ function parseOp(value: unknown): SyncOpEnvelope | string {
   }
 
   const rawPayload = record['payload'];
-  let payload: Readonly<Record<string, unknown>> | null = null;
+  let payload: Record<string, unknown> | undefined;
   if (rawPayload !== undefined && rawPayload !== null) {
     if (action === 'delete' || typeof rawPayload !== 'object' || Array.isArray(rawPayload)) {
       return 'payload';
     }
-    payload = rawPayload as Readonly<Record<string, unknown>>;
+    payload = rawPayload as Record<string, unknown>;
   } else if (action !== 'delete') {
     return 'payload';
   }
 
-  // Canonical diary-op shape (supervisor-routed s2c freeze): localDate rides
-  // BOTH the envelope AND the payload, with PARITY — a payload localDate
-  // that disagrees with the envelope field is an envelope/payload parity
-  // violation (the §1.2 whole-batch class). Payload-localDate ABSENCE is the
-  // handler domain's business (the real diary handler validates its frozen
-  // payload shape at dispatch).
-  if (kind === 'diary_entry' && payload !== null && payload['localDate'] !== undefined) {
+  // Canonical diary shape: envelope↔payload localDate PARITY (supervisor
+  // ruling 2026-10-08 — a DISAGREEMENT is a whole-batch shape error; the
+  // payload-localDate ABSENCE is the real diary handler's frozen payload
+  // validation, per-op at dispatch).
+  if (kind === 'diary_entry' && payload !== undefined && payload['localDate'] !== undefined) {
     if (payload['localDate'] !== localDate) {
       return 'localDate';
     }
@@ -231,10 +237,9 @@ function parseOp(value: unknown): SyncOpEnvelope | string {
     kind,
     entityId,
     action,
-    clientUpdatedAt: new Date(clientUpdatedAtIso),
-    clientUpdatedAtIso,
-    localDate,
-    payload,
+    clientUpdatedAt,
+    ...(localDate === undefined ? {} : { localDate }),
+    ...(payload === undefined ? {} : { payload }),
   };
 }
 

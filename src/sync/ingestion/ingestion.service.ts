@@ -66,7 +66,7 @@ import { parseBatchBody, validateIdempotencyKey, type ParsedBatch } from './op-e
 import { OpHandlerRegistry } from './op-handler-registry.js';
 import { SyncConfigService } from './sync.config.js';
 import type { RecordedSyncOp } from './op-ledger.store.js';
-import type { RejectionCode } from './sync-seams.js';
+import type { RejectionCode } from '../../tracking/sync-seams.js';
 
 /** The endpoint scope of every key recorded by this service (conventions §3). */
 export const SYNC_OPS_ENDPOINT = '/sync/ops';
@@ -182,9 +182,9 @@ export class SyncIngestionService {
             entityKind: op.kind,
             entityAction: op.action,
             entityId: op.entityId,
-            localDate: op.localDate,
-            clientUpdatedAtIso: op.clientUpdatedAtIso,
-            payload: op.payload,
+            localDate: op.localDate ?? null,
+            clientUpdatedAt: op.clientUpdatedAt,
+            payload: op.payload ?? null,
             outcome: 'rejected',
             rejectionCode: 'rejected_validation',
             retryable: false,
@@ -206,9 +206,9 @@ export class SyncIngestionService {
             entityKind: op.kind,
             entityAction: op.action,
             entityId: op.entityId,
-            localDate: op.localDate,
-            clientUpdatedAtIso: op.clientUpdatedAtIso,
-            payload: op.payload,
+            localDate: op.localDate ?? null,
+            clientUpdatedAt: op.clientUpdatedAt,
+            payload: op.payload ?? null,
             outcome: 'applied',
           });
           results.push({ opId: op.opId, outcome: 'applied' });
@@ -226,9 +226,9 @@ export class SyncIngestionService {
             entityKind: op.kind,
             entityAction: op.action,
             entityId: op.entityId,
-            localDate: op.localDate,
-            clientUpdatedAtIso: op.clientUpdatedAtIso,
-            payload: op.payload,
+            localDate: op.localDate ?? null,
+            clientUpdatedAt: op.clientUpdatedAt,
+            payload: op.payload ?? null,
             outcome: 'rejected',
             rejectionCode: verdict.code,
             retryable: verdict.retryable,

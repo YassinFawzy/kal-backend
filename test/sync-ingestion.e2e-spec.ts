@@ -3,11 +3,19 @@
  * AppModule against a real, fully-migrated, EPHEMERAL PostgreSQL database
  * (the established harness pattern; the dev database is never touched).
  *
- * The dispatch seam is exercised through the PRODUCTION registry path with
- * the clearly-marked TEST-ONLY seam handler (test/support/sync-test-handler
- * .ts — a §1.3-faithful mini state machine over the real `favorites` table).
- * The real diary/foods handlers merge via s2a/s2c; combined behavior is
- * proven at the s4/integration stage (stated in the lane MR).
+ * POST-s2c REBASE SHAPE: the sync module registers tracking's REAL handlers
+ * (s2a: user_food + favorite; s2c: diary_entry) at AppModule init through
+ * the production registry path — so this suite exercises the assembled
+ * seam end-to-end with NO test handler. Engine semantics run through the
+ * REAL diary handler (quick-add entries: the zero-dependency frozen
+ * snapshot shape); the shared limiter's acked-not-recorded
+ * `rejected_rate_limited` path is pinned through the REAL user_food handler
+ * and the REAL limiter with a harness clock lapse (the supervisor-pinned
+ * batch-integration obligation). The deterministic failure-injection and
+ * registry-miss cases live in the unit/integration suites (the itspec
+ * constructs its own registry with the clearly-marked TEST-ONLY handler;
+ * with all three real kinds registered, the registry-miss case is a
+ * defensive seam unreachable via HTTP).
  *
  * Covered required cases (task contract):
  *   - Fixture round-trip: served w3 `sync.ops.push` responses (200/400/401)
@@ -20,20 +28,20 @@
  *     replay; same key+changed payload ⇒ `409 CONFLICT`; two concurrent
  *     same-key requests ⇒ exactly one executes, the other serves the
  *     recorded outcome (byte-identical).
- *   - Ordering/state machine: create → older-update (LWW loser recorded
- *     applied, no change) → newer-update → delete → update-after-delete
- *     (`rejected_deleted`) → create-after-delete (`rejected_deleted`);
- *     unknown kind STRING ⇒ whole-batch 400; enum-valid kind with no
- *     registered handler ⇒ per-op `rejected` (validation class).
- *   - Negative/adversarial (in-lane): B's credentials pushing A's op ID ⇒
- *     no match, generic fresh outcome, A's acks and rows untouched;
- *     malformed envelope ⇒ `400 VALIDATION_FAILED` without echoing received
- *     values; oversized batch (over the configured cap) ⇒ `400`;
- *     unauthenticated ⇒ `401`.
- *   - Recovery/atomicity: injected handler failure mid-batch ⇒ problem-
- *     details 500 with zero partial state; retry succeeds exactly once.
- *   - `rejected_rate_limited` (§1.7 directed resolution): acked retryable,
- *     NOT durably recorded — a later retry re-runs and applies.
+ *   - Ordering/state machine through the REAL diary handler: create →
+ *     older-update (LWW loser recorded applied, no change) → newer-update →
+ *     delete (tombstone) → update-after-delete (`rejected_deleted`) →
+ *     create-after-delete (`rejected_deleted`, no resurrection).
+ *   - Negative/adversarial (in-lane; s4a deepens): B's credentials pushing
+ *     A's op ID ⇒ no match, generic fresh outcome, A's acks and rows
+ *     untouched; malformed envelope ⇒ `400 VALIDATION_FAILED` without
+ *     echoing received values; oversized batch ⇒ `400`; unauthenticated ⇒
+ *     `401`.
+ *   - `rejected_rate_limited` (§1.7 directed resolution — the supervisor-
+ *     pinned batch-integration obligation): acked retryable, NOT durably
+ *     recorded (no `sync_operations` row); a same-opId retry re-runs the
+ *     real handler; after the limiter window lapses (harness clock) the
+ *     retry applies.
  */
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
@@ -43,9 +51,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from '../src/app.module.js';
 import { READINESS_CHECKS } from '../src/health/readiness.js';
 import { w3FixturesDocument } from '../src/contracts/w3.fixtures.js';
-import { OpHandlerRegistry } from '../src/sync/ingestion/op-handler-registry.js';
 import { assertConformsToSchema } from './support/contract-schema.js';
-import { createFavoriteTestHandler } from './support/sync-test-handler.js';
 import { adminQuery, createEphemeralKalDb, type EphemeralKalDb } from './integration/helpers/ephemeral-db.js';
 
 /** Synthetic fixture secret (placeholder-free, I15-safe) — never a real credential. */
@@ -65,15 +71,6 @@ const USER_B = {
   username: 'sync_e2e_b',
 };
 
-/**
- * Reserved fixture-range food ids (FK targets; the production-faithful
- * catalog seed path). Each CREATE op deterministically maps to one food
- * (op number mod pool size) — stable across re-pushes (byte-identical
- * bodies for the Idempotency-Key suite) and collision-free for the
- * one-active-favorite-per-food rule within a user.
- */
-const FOODS: string[] = Array.from({ length: 24 }, (_v, i) => `00000000-0000-4000-8000-00000000f1${i.toString(16).padStart(2, '0')}`);
-
 /** Synthetic fixture-range UUIDs (never real accounts or real entities). */
 function fixtureUuid(tail: string): string {
   const hex = (tail.match(/[0-9a-f]/giu) ?? []).join('').padEnd(12, '0').slice(0, 12);
@@ -90,10 +87,6 @@ let app: INestApplication<App>;
 let db: EphemeralKalDb;
 let userIdA = '';
 let userIdB = '';
-
-/** Suite-driven injection points for the test handler (per-op, mutable). */
-const failOpIds = new Set<string>();
-const rateLimitedOpIds = new Set<string>();
 
 let tokenA = '';
 let tokenB = '';
@@ -141,6 +134,26 @@ async function signupAndSignin(
   return (signin.body as { accessToken: string }).accessToken;
 }
 
+const DAY = '2026-10-08';
+const T0 = '2026-10-08T07:00:00Z';
+const T1 = '2026-10-08T08:00:00Z';
+const T2 = '2026-10-08T09:00:00Z';
+
+/** The frozen quick-add diary snapshot (s2c's validated shape; no food reference). */
+function quickAddSnapshot(localDate: string): Record<string, unknown> {
+  return {
+    localDate,
+    mealSlot: 'breakfast',
+    entryMethod: 'quick_add',
+    status: 'confirmed',
+    quantity: 1,
+    energyKcal: 250,
+    proteinG: 8,
+    carbsG: 30,
+    fatG: 7,
+  };
+}
+
 interface OpInput {
   opId: string;
   kind: string;
@@ -149,6 +162,30 @@ interface OpInput {
   clientUpdatedAt: string;
   localDate?: string;
   payload?: Record<string, unknown>;
+}
+
+function diaryCreate(n: number, entityId: string, at: string): OpInput {
+  return {
+    opId: opId(n),
+    kind: 'diary_entry',
+    entityId,
+    action: 'create',
+    clientUpdatedAt: at,
+    localDate: DAY,
+    payload: quickAddSnapshot(DAY),
+  };
+}
+
+/** The frozen user-food snapshot (s2a's validated shape — the limiter's entity). */
+function userFoodCreate(n: number, entityId: string, at: string): OpInput {
+  return {
+    opId: opId(n),
+    kind: 'user_food',
+    entityId,
+    action: 'create',
+    clientUpdatedAt: at,
+    payload: { nameEn: 'Sync e2e food', energyKcal: 120, proteinG: 4, carbsG: 15, fatG: 3 },
+  };
 }
 
 async function push(
@@ -164,35 +201,20 @@ async function push(
     .send({ deviceId, ops });
 }
 
-function createOp(n: number, entityId: string, at: string): OpInput {
-  return {
-    opId: opId(n),
-    kind: 'favorite',
-    entityId,
-    action: 'create',
-    clientUpdatedAt: at,
-    payload: { foodId: FOODS[n % FOODS.length] as string },
-  };
-}
+type DiaryRow = { updated_at: Date; deleted_at: Date | null; last_op_id: string | null };
 
-const T0 = '2026-10-08T07:00:00Z';
-const T1 = '2026-10-08T08:00:00Z';
-const T2 = '2026-10-08T09:00:00Z';
-
-type FavoriteRow = { updated_at: Date; deleted_at: Date | null; last_op_id: string | null };
-
-async function favoriteRowCount(userId: string): Promise<number> {
-  const result = await adminQuery(db, 'SELECT count(*)::int AS n FROM favorites WHERE user_id = $1', [userId]);
-  return (result.rows[0] as { n: number }).n;
-}
-
-async function favoriteRow(userId: string, entityId: string): Promise<FavoriteRow | null> {
+async function diaryRow(userId: string, entityId: string): Promise<DiaryRow | null> {
   const result = await adminQuery(
     db,
-    'SELECT updated_at, deleted_at, last_op_id FROM favorites WHERE user_id = $1 AND id = $2',
+    'SELECT updated_at, deleted_at, last_op_id FROM diary_entries WHERE user_id = $1 AND id = $2',
     [userId, entityId],
   );
-  return (result.rows[0] as FavoriteRow | undefined) ?? null;
+  return (result.rows[0] as DiaryRow | undefined) ?? null;
+}
+
+async function diaryRowCount(userId: string): Promise<number> {
+  const result = await adminQuery(db, 'SELECT count(*)::int AS n FROM diary_entries WHERE user_id = $1', [userId]);
+  return (result.rows[0] as { n: number }).n;
 }
 
 async function ledgerRowCount(userId: string, clientOpId: string): Promise<number> {
@@ -212,36 +234,16 @@ beforeAll(async () => {
   db = await createEphemeralKalDb('syncing');
   db.applyMigrations();
 
-  // The catalog is platform-authored: the production-faithful seed path
-  // (the admin/migration connection), exactly as the tracking-rls suite
-  // seeds it. FK targets for the test handler's favorite creates.
-  await adminQuery(
-    db,
-    `INSERT INTO foods (id, type, provenance, license_partition, name_en, name_en_normalized,
-       name_ar, name_ar_normalized, aliases, aliases_normalized, energy_kcal, protein_g, carbs_g, fat_g)
-     SELECT id, 'dish', 'kal_reviewed', 'proprietary', 'Fixture food ' || row_number() OVER (),
-       'fixture food ' || row_number() OVER (), 'طعام تجريبي', 'طعام تجريبي',
-       ARRAY['fixture']::text[], ARRAY['fixture']::text[], 100, 5, 10, 2
-     FROM unnest($1::uuid[]) AS id`,
-    [FOODS],
-  );
-
   const url = new URL(process.env['DATABASE_URL'] as string);
   url.pathname = `/${db.name}`;
+  // TRACKING_USER_FOOD_CREATE_MAX_PER_HOUR=1: the shared limiter's tightest
+  // valid bound — the real handler's rate-limited path is exercisable in-suite.
   app = await bootApp({
     DATABASE_URL: url.toString(),
     IDENTITY_JWT_SIGNING_KEY: SIGNING_KEY,
     NODE_ENV: 'test',
+    TRACKING_USER_FOOD_CREATE_MAX_PER_HOUR: '1',
   });
-
-  // Register the TEST-ONLY seam handler through the PRODUCTION registry
-  // path (the same API the tracking lanes use at module init).
-  app.get(OpHandlerRegistry).registerOpHandler(
-    createFavoriteTestHandler({
-      failWhen: (op) => failOpIds.has(op.opId),
-      rateLimitWhen: (op) => rateLimitedOpIds.has(op.opId),
-    }),
-  );
 
   tokenA = await signupAndSignin(USER_A, 1);
   tokenB = await signupAndSignin(USER_B, 2);
@@ -267,11 +269,11 @@ afterAll(async () => {
 
 // ---------------------------------------------------------------------------
 
-describe('sync.ops.push — fixture round-trip (§0/§2)', () => {
-  const ENTITY_ROUNDTRIP = fixtureUuid('e001');
+describe('sync.ops.push — fixture round-trip (§0/§2, real diary handler)', () => {
+  const ENTITY_ROUNDTRIP = fixtureUuid('d001');
 
   it('a 200 ack conforms to the served w3 bodySchema (results items: opId + outcome), exact content type', async () => {
-    const response = await push(tokenA, [createOp(1, ENTITY_ROUNDTRIP, T0)], keyId(50));
+    const response = await push(tokenA, [diaryCreate(1, ENTITY_ROUNDTRIP, T0)], keyId(50));
     expect(response.status).toBe(200);
     expect(response.headers['content-type']).toBe('application/json; charset=utf-8');
     const entry = w3FixturesDocument().endpoints.find((e) => e.id === 'sync.ops.push');
@@ -279,6 +281,8 @@ describe('sync.ops.push — fixture round-trip (§0/§2)', () => {
     const ok = entry?.responses.find((r) => r.status === 200);
     assertConformsToSchema(response.body, ok?.bodySchema as never, 'sync.ops.push');
     expect(resultsOf(response)[0]).toEqual({ opId: opId(1), outcome: 'applied' });
+    // The real diary handler wrote the frozen snapshot.
+    expect(await diaryRow(userIdA, ENTITY_ROUNDTRIP)).not.toBeNull();
   });
 
   it('error responses carry the exact frozen registry codes, problem-details content type, bearer challenge', async () => {
@@ -288,30 +292,24 @@ describe('sync.ops.push — fixture round-trip (§0/§2)', () => {
     expect((unauthenticated.body as { code: string }).code).toBe('UNAUTHENTICATED');
     expect(unauthenticated.headers['www-authenticate']).toBe('Bearer');
 
-    const badBatch = await push(tokenA, [{ ...createOp(2, ENTITY_ROUNDTRIP, T0), kind: 'nonsense' }], keyId(51));
+    const badBatch = await push(tokenA, [{ ...diaryCreate(2, fixtureUuid('d002'), T0), kind: 'nonsense' }], keyId(51));
     expect(badBatch.status).toBe(400);
     expect(badBatch.headers['content-type']).toContain('application/problem+json');
     expect((badBatch.body as { code: string }).code).toBe('VALIDATION_FAILED');
-
-    const entry = w3FixturesDocument().endpoints.find((e) => e.id === 'sync.ops.push');
-    for (const code of ['VALIDATION_FAILED', 'UNAUTHENTICATED']) {
-      const declared = entry?.responses.find((r) => r.status === (code === 'VALIDATION_FAILED' ? 400 : 401));
-      expect(declared).toBeDefined();
-    }
   });
 });
 
 describe('sync.ops.push — happy batch (PRD §23.1 shape) + duplicate replay (I9)', () => {
-  const E1 = fixtureUuid('e011');
-  const E2 = fixtureUuid('e012');
-  const E3 = fixtureUuid('e013');
+  const E1 = fixtureUuid('d011');
+  const E2 = fixtureUuid('d012');
+  const E3 = fixtureUuid('d013');
 
   it('the 4-op batch (three creates + one edit) applies in request order; replay acks all duplicate with zero re-application', async () => {
     const ops: OpInput[] = [
-      createOp(10, E1, T0),
-      createOp(11, E2, T0),
-      createOp(12, E3, T0),
-      { ...createOp(13, E2, T1), action: "update" }, // the edit
+      diaryCreate(10, E1, T0),
+      diaryCreate(11, E2, T0),
+      diaryCreate(12, E3, T0),
+      { ...diaryCreate(13, E2, T1), action: 'update' }, // the edit
     ];
 
     const first = await push(tokenA, ops, keyId(60));
@@ -323,42 +321,42 @@ describe('sync.ops.push — happy batch (PRD §23.1 shape) + duplicate replay (I
       [opId(13), 'applied'],
     ]);
     // The edit WON LWW (newer instant) — the row carries its instant + op id.
-    const edited = await favoriteRow(userIdA, E2);
+    const edited = await diaryRow(userIdA, E2);
     expect(edited?.last_op_id).toBe(opId(13));
-    expect(edited === null ? '' : (edited.updated_at as Date).toISOString()).toBe(new Date(T1).toISOString()); // the edit's instant, stored
+    expect(edited === null ? '' : (edited.updated_at as Date).toISOString()).toBe(new Date(T1).toISOString());
 
     // Duplicate replay: a NEW request (fresh Idempotency-Key), SAME ops.
-    const countBefore = await favoriteRowCount(userIdA);
-    const editedBefore = await favoriteRow(userIdA, E2);
+    const countBefore = await diaryRowCount(userIdA);
+    const editedBefore = await diaryRow(userIdA, E2);
     const replay = await push(tokenA, ops, keyId(61));
     expect(replay.status).toBe(200);
     expect(resultsOf(replay).map((r) => r.outcome)).toEqual(['duplicate', 'duplicate', 'duplicate', 'duplicate']);
     // Zero re-application: row count and stored winner byte-unchanged.
-    expect(await favoriteRowCount(userIdA)).toBe(countBefore);
-    expect(await favoriteRow(userIdA, E2)).toEqual(editedBefore);
+    expect(await diaryRowCount(userIdA)).toBe(countBefore);
+    expect(await diaryRow(userIdA, E2)).toEqual(editedBefore);
   });
 });
 
 describe('sync.ops.push — Idempotency-Key matrix (conventions §3)', () => {
   const KEY = keyId(900);
-  const ENTITY_K = fixtureUuid('e0a1');
-  const ops: OpInput[] = [createOp(20, ENTITY_K, T0)];
+  const ENTITY_K = fixtureUuid('d0a1');
+  const ops: OpInput[] = [diaryCreate(20, ENTITY_K, T0)];
 
   it('same key + same payload ⇒ the recorded outcome replays byte-identically, no second application', async () => {
-    const countBefore = await favoriteRowCount(userIdA);
+    const countBefore = await diaryRowCount(userIdA);
     const first = await push(tokenA, ops, KEY);
     expect(first.status).toBe(200);
-    const afterFirst = await favoriteRowCount(userIdA);
+    const afterFirst = await diaryRowCount(userIdA);
     expect(afterFirst).toBe(countBefore + 1);
 
     const replay = await push(tokenA, ops, KEY);
     expect(replay.status).toBe(200);
     expect(replay.text).toBe(first.text); // BYTE-stable
-    expect(await favoriteRowCount(userIdA)).toBe(afterFirst); // no second application
+    expect(await diaryRowCount(userIdA)).toBe(afterFirst); // no second application
   });
 
   it('same key + changed payload ⇒ 409 CONFLICT', async () => {
-    const changed: OpInput[] = [createOp(20, ENTITY_K, T1)]; // different clientUpdatedAt
+    const changed: OpInput[] = [diaryCreate(20, ENTITY_K, T1)]; // different clientUpdatedAt
     const conflict = await push(tokenA, changed, KEY);
     expect(conflict.status).toBe(409);
     expect(conflict.headers['content-type']).toContain('application/problem+json');
@@ -366,10 +364,10 @@ describe('sync.ops.push — Idempotency-Key matrix (conventions §3)', () => {
   });
 
   it('two concurrent same-key requests ⇒ exactly one executes; the other serves the recorded outcome (byte-identical)', async () => {
-    const entity = fixtureUuid('e0a2');
-    const concurrentOps: OpInput[] = [createOp(21, entity, T0)];
+    const entity = fixtureUuid('d0a2');
+    const concurrentOps: OpInput[] = [diaryCreate(21, entity, T0)];
     const key = keyId(902);
-    const countBefore = await favoriteRowCount(userIdA);
+    const countBefore = await diaryRowCount(userIdA);
 
     const [r1, r2] = await Promise.all([
       push(tokenA, concurrentOps, key, 'device-x'),
@@ -381,101 +379,98 @@ describe('sync.ops.push — Idempotency-Key matrix (conventions §3)', () => {
     // recorded outcome), one entity row, one ledger row.
     expect(r2.text).toBe(r1.text);
     expect(resultsOf(r1)[0]).toEqual({ opId: opId(21), outcome: 'applied' });
-    expect(await favoriteRowCount(userIdA)).toBe(countBefore + 1);
+    expect(await diaryRowCount(userIdA)).toBe(countBefore + 1);
     expect(await ledgerRowCount(userIdA, opId(21))).toBe(1);
   });
 });
 
-describe('sync.ops.push — ordering/state machine (§1.3/§1.4, engine-dispatched)', () => {
-  const E = fixtureUuid('e021');
+describe('sync.ops.push — ordering/state machine through the REAL diary handler (§1.3/§1.4)', () => {
+  const E = fixtureUuid('d021');
 
   it('create → older-update (LWW loser: applied, no change) → newer-update → delete → update-after-delete → create-after-delete', async () => {
     // create (T1)
-    const c = await push(tokenA, [createOp(30, E, T1)], keyId(701));
+    const c = await push(tokenA, [diaryCreate(30, E, T1)], keyId(701));
     expect(resultsOf(c)[0]?.outcome).toBe('applied');
 
     // OLDER update (T0 < T1): the LWW loser — recorded applied, changes nothing.
-    const loser = await push(tokenA, [{ ...createOp(31, E, T0), action: "update" }], keyId(702));
+    const loser = await push(tokenA, [{ ...diaryCreate(31, E, T0), action: 'update' }], keyId(702));
     expect(loser.status).toBe(200);
     expect(resultsOf(loser)[0]).toEqual({ opId: opId(31), outcome: 'applied' });
-    expect((await favoriteRow(userIdA, E))?.last_op_id).toBe(opId(30)); // the create still wins
+    expect((await diaryRow(userIdA, E))?.last_op_id).toBe(opId(30)); // the create still wins
 
     // NEWER update (T2 > T1): wins.
-    const winner = await push(tokenA, [{ ...createOp(32, E, T2), action: "update" }], keyId(703));
+    const winner = await push(tokenA, [{ ...diaryCreate(32, E, T2), action: 'update' }], keyId(703));
     expect(resultsOf(winner)[0]?.outcome).toBe('applied');
-    expect((await favoriteRow(userIdA, E))?.last_op_id).toBe(opId(32));
+    expect((await diaryRow(userIdA, E))?.last_op_id).toBe(opId(32));
 
-    // delete (T2) — tombstone.
-    const del = await push(tokenA, [{ ...createOp(33, E, T2), action: "delete", payload: undefined }], keyId(704));
+    // delete (T2) — tombstone (diary deletes carry the envelope localDate, no payload).
+    const del = await push(
+      tokenA,
+      [{ ...diaryCreate(33, E, T2), action: 'delete', payload: undefined }],
+      keyId(704),
+    );
     expect(resultsOf(del)[0]?.outcome).toBe('applied');
-    expect((await favoriteRow(userIdA, E))?.deleted_at).not.toBeNull();
+    expect((await diaryRow(userIdA, E))?.deleted_at).not.toBeNull();
 
     // update-after-delete: rejected_deleted, retryable false.
-    const zombie = await push(tokenA, [{ ...createOp(34, E, T2), action: "update" }], keyId(705));
+    const zombie = await push(tokenA, [{ ...diaryCreate(34, E, T2), action: 'update' }], keyId(705));
     expect(resultsOf(zombie)[0]).toEqual({ opId: opId(34), outcome: 'rejected', code: 'rejected_deleted', retryable: false });
 
     // create-after-delete: SAME entity id is blocked (no resurrection, I9).
-    const resurrection = await push(tokenA, [createOp(35, E, T2)], keyId(706));
+    const resurrection = await push(tokenA, [diaryCreate(35, E, T2)], keyId(706));
     expect(resultsOf(resurrection)[0]).toEqual({ opId: opId(35), outcome: 'rejected', code: 'rejected_deleted', retryable: false });
 
     // Deterministic replay of the recorded rejection (new key, same op).
-    const replay = await push(tokenA, [{ ...createOp(34, E, T2), action: "update" }], keyId(707));
+    const replay = await push(tokenA, [{ ...diaryCreate(34, E, T2), action: 'update' }], keyId(707));
     expect(resultsOf(replay)[0]).toEqual({ opId: opId(34), outcome: 'rejected', code: 'rejected_deleted', retryable: false });
   });
 });
 
-describe('sync.ops.push — registry discipline (§1.2 layer 1 vs §4 layer 2)', () => {
+describe('sync.ops.push — batch-shape discipline (§1.2; layer 2 pinned at unit level)', () => {
   it('an unknown kind STRING is a batch-shape error (whole-batch 400, nothing recorded)', async () => {
-    const before = await favoriteRowCount(userIdA);
+    const before = await diaryRowCount(userIdA);
     const response = await push(
       tokenA,
-      [createOp(40, fixtureUuid("e031"), T0), { ...createOp(41, fixtureUuid("e032"), T0), kind: "not_a_kind" }],
+      [diaryCreate(40, fixtureUuid('d031'), T0), { ...diaryCreate(41, fixtureUuid('d032'), T0), kind: 'not_a_kind' }],
       keyId(710),
     );
     expect(response.status).toBe(400);
     expect((response.body as { code: string }).code).toBe('VALIDATION_FAILED');
-    expect(await favoriteRowCount(userIdA)).toBe(before);
+    expect(await diaryRowCount(userIdA)).toBe(before);
   });
 
-  it('an enum-valid kind with no registered handler ⇒ per-op rejected (validation class); the rest of the batch applies', async () => {
+  it('the canonical diary shape: envelope↔payload localDate DISAGREEMENT is a whole-batch shape error', async () => {
+    const before = await diaryRowCount(userIdA);
     const response = await push(
       tokenA,
       [
         {
-          ...createOp(42, fixtureUuid('e033'), T0),
-          kind: 'diary_entry',
-          localDate: '2026-10-08',
-          payload: { mealSlot: 'breakfast' },
+          ...diaryCreate(42, fixtureUuid('d033'), T0),
+          payload: { ...quickAddSnapshot(DAY), localDate: '2026-10-09' }, // disagrees with the envelope
         },
-        createOp(43, fixtureUuid('e034'), T0),
       ],
       keyId(711),
     );
-    expect(response.status).toBe(200);
-    const results = resultsOf(response);
-    expect(results[0]).toEqual({ opId: opId(42), outcome: 'rejected', code: 'rejected_validation', retryable: false });
-    expect(results[1]?.outcome).toBe('applied');
+    expect(response.status).toBe(400);
+    expect((response.body as { code: string }).code).toBe('VALIDATION_FAILED');
+    expect(await diaryRowCount(userIdA)).toBe(before);
   });
 });
 
 describe('sync.ops.push — adversarial (in-lane; s4a deepens)', () => {
   it("B's credentials pushing A's op ID ⇒ no match, generic fresh outcome; A's rows and acks untouched", async () => {
     const sharedOpId = opId(10); // an opId A already pushed (applied)
-    const countABefore = await favoriteRowCount(userIdA);
-    const countBBefore = await favoriteRowCount(userIdB);
+    const countABefore = await diaryRowCount(userIdA);
+    const countBBefore = await diaryRowCount(userIdB);
 
-    const response = await push(
-      tokenB,
-      [createOp(10, fixtureUuid('e041'), T0)],
-      keyId(720),
-    );
+    const response = await push(tokenB, [diaryCreate(10, fixtureUuid('d041'), T0)], keyId(720));
     expect(response.status).toBe(200);
     // A fresh, ordinary outcome under B — nothing about A's recorded op.
     expect(resultsOf(response)[0]).toEqual({ opId: sharedOpId, outcome: 'applied' });
-    expect(await favoriteRowCount(userIdB)).toBe(countBBefore + 1);
+    expect(await diaryRowCount(userIdB)).toBe(countBBefore + 1);
     // A's rows unchanged; A's replay still acks duplicate of A's own outcome.
-    expect(await favoriteRowCount(userIdA)).toBe(countABefore);
-    const replayA = await push(tokenA, [createOp(10, fixtureUuid('e011'), T0)], keyId(721));
+    expect(await diaryRowCount(userIdA)).toBe(countABefore);
+    const replayA = await push(tokenA, [diaryCreate(10, fixtureUuid('d011'), T0)], keyId(721));
     expect(resultsOf(replayA)[0]?.outcome).toBe('duplicate');
   });
 
@@ -483,7 +478,7 @@ describe('sync.ops.push — adversarial (in-lane; s4a deepens)', () => {
     const hostile = 'health-payload-marked-for-redaction-scan';
     const response = await push(
       tokenA,
-      [{ ...createOp(44, fixtureUuid('e042'), T0), clientUpdatedAt: hostile }],
+      [{ ...diaryCreate(44, fixtureUuid('d042'), T0), clientUpdatedAt: hostile }],
       keyId(722),
     );
     expect(response.status).toBe(400);
@@ -496,72 +491,78 @@ describe('sync.ops.push — adversarial (in-lane; s4a deepens)', () => {
   });
 
   it('an oversized batch (over the configured cap) ⇒ 400 with zero ops applied', async () => {
-    const before = await favoriteRowCount(userIdA);
+    const before = await diaryRowCount(userIdA);
     const bigBatch: OpInput[] = Array.from({ length: 101 }, (_v, i) =>
-      createOp(1000 + i, fixtureUuid(`f${i.toString(16)}`), T0),
+      diaryCreate(1000 + i, fixtureUuid(`d${i.toString(16)}`), T0),
     );
     const response = await push(tokenA, bigBatch, keyId(723));
     expect(response.status).toBe(400);
     expect((response.body as { code: string }).code).toBe('VALIDATION_FAILED');
-    expect(await favoriteRowCount(userIdA)).toBe(before);
+    expect(await diaryRowCount(userIdA)).toBe(before);
   });
 });
 
-describe('sync.ops.push — recovery/atomicity + rate-limited semantics', () => {
-  it('injected handler failure mid-batch ⇒ generic 500 problem-details, ZERO partial state; retry succeeds exactly once', async () => {
-    const e1 = fixtureUuid('e051');
-    const e2 = fixtureUuid('e052');
-    const e3 = fixtureUuid('e053');
-    const batch: OpInput[] = [createOp(51, e1, T0), createOp(52, e2, T0), createOp(53, e3, T0)];
+describe('sync.ops.push — rejected_rate_limited through the REAL handler + limiter (§1.7, supervisor-pinned)', () => {
+  const UF1 = fixtureUuid('u001');
+  const UF2 = fixtureUuid('u002');
 
-    failOpIds.add(opId(52));
-    try {
-      const failed = await push(tokenA, batch, keyId(730));
-      expect(failed.status).toBe(500);
-      expect(failed.headers['content-type']).toContain('application/problem+json');
-      expect((failed.body as { code: string }).code).toBe('INTERNAL_ERROR');
-      // Zero partial state: none of the batch's entities exist.
-      expect(await favoriteRow(userIdA, e1)).toBeNull();
-      expect(await favoriteRow(userIdA, e2)).toBeNull();
-      expect(await favoriteRow(userIdA, e3)).toBeNull();
-    } finally {
-      failOpIds.delete(opId(52));
-    }
+  it('over-limit create: acked retryable, NOT durably recorded; same-opId retry re-runs; after the window it applies', async () => {
+    // Boot bound: TRACKING_USER_FOOD_CREATE_MAX_PER_HOUR=1.
+    const batch: OpInput[] = [userFoodCreate(51, UF1, T0), userFoodCreate(52, UF2, T0)];
+    const limited = await push(tokenA, batch, keyId(730));
+    expect(limited.status).toBe(200);
+    const results = resultsOf(limited);
+    expect(results[0]).toEqual({ opId: opId(51), outcome: 'applied' }); // within the limit
+    expect(results[1]).toEqual({
+      opId: opId(52),
+      outcome: 'rejected',
+      code: 'rejected_rate_limited',
+      retryable: true,
+    });
+    // The directed resolution (§1.7): the over-limit create is NOT durably
+    // queued server-side — no entity, and crucially NO sync_operations row
+    // (a recorded rejection would replay forever and block the §1.7 retry).
+    const ufRow = await adminQuery(
+      db,
+      'SELECT count(*)::int AS n FROM user_foods WHERE user_id = $1 AND id = $2',
+      [userIdA, UF2],
+    );
+    expect((ufRow.rows[0] as { n: number }).n).toBe(0);
+    expect(await ledgerRowCount(userIdA, opId(52))).toBe(0);
 
-    // Crash-retry equivalence: the same batch retried ⇒ identical final
-    // state to a single clean run; each op applies exactly once.
-    const retry = await push(tokenA, batch, keyId(730));
-    expect(retry.status).toBe(200);
-    expect(resultsOf(retry).map((r) => r.outcome)).toEqual(['applied', 'applied', 'applied']);
+    // The SAME opId retried while the window is live: re-runs the real
+    // handler (possible only because nothing is recorded) — rate-limited
+    // again, still nothing recorded.
+    const retryLive = await push(tokenA, [userFoodCreate(52, UF2, T0)], keyId(731));
+    expect(resultsOf(retryLive)[0]).toEqual({
+      opId: opId(52),
+      outcome: 'rejected',
+      code: 'rejected_rate_limited',
+      retryable: true,
+    });
+    expect(await ledgerRowCount(userIdA, opId(52))).toBe(0);
 
-    // A further clean replay of the same ops ⇒ duplicates, state unchanged.
-    const countAfterRetry = await favoriteRowCount(userIdA);
-    const verify = await push(tokenA, batch, keyId(731));
-    expect(resultsOf(verify).map((r) => r.outcome)).toEqual(['duplicate', 'duplicate', 'duplicate']);
-    expect(await favoriteRowCount(userIdA)).toBe(countAfterRetry);
-  });
+    // Lapse the limiter window (harness clock — the admin connection; the
+    // app role holds no such grant).
+    await adminQuery(
+      db,
+      `UPDATE user_food_create_counters
+       SET hour_window_start = now() - interval '2 hours',
+           day_window_start  = now() - interval '25 hours'
+       WHERE user_id = $1`,
+      [userIdA],
+    );
 
-  it('rejected_rate_limited: acked retryable=true, NOT durably recorded — a later retry re-runs and applies (§1.7)', async () => {
-    const e = fixtureUuid('e061');
-    rateLimitedOpIds.add(opId(54));
-    try {
-      const limited = await push(tokenA, [createOp(54, e, T0)], keyId(740));
-      expect(limited.status).toBe(200);
-      expect(resultsOf(limited)[0]).toEqual({
-        opId: opId(54),
-        outcome: 'rejected',
-        code: 'rejected_rate_limited',
-        retryable: true,
-      });
-      // Not durably recorded: no entity, no ledger row.
-      expect(await favoriteRow(userIdA, e)).toBeNull();
-      expect(await ledgerRowCount(userIdA, opId(54))).toBe(0);
-    } finally {
-      rateLimitedOpIds.delete(opId(54));
-    }
-    // Retry (window passed): the handler re-runs and applies.
-    const retry = await push(tokenA, [createOp(54, e, T0)], keyId(741));
-    expect(resultsOf(retry)[0]?.outcome).toBe('applied');
-    expect(await favoriteRow(userIdA, e)).not.toBeNull();
+    // Same opId, same payload, fresh key: the handler re-runs, the tick
+    // opens a fresh window, the create APPLIES — the §1.7 retry contract.
+    const retryLapsed = await push(tokenA, [userFoodCreate(52, UF2, T0)], keyId(732));
+    expect(resultsOf(retryLapsed)[0]).toEqual({ opId: opId(52), outcome: 'applied' });
+    const ufRowAfter = await adminQuery(
+      db,
+      'SELECT count(*)::int AS n FROM user_foods WHERE user_id = $1 AND id = $2',
+      [userIdA, UF2],
+    );
+    expect((ufRowAfter.rows[0] as { n: number }).n).toBe(1);
+    expect(await ledgerRowCount(userIdA, opId(52))).toBe(1); // NOW durably recorded
   });
 });

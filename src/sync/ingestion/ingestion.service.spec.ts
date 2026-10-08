@@ -30,7 +30,7 @@ import { IdempotencyKeyStore, type InsertKeyInput, type RecordedKeyResponse } fr
 import { OpLedgerStore, type InsertRecordedInput, type RecordedSyncOp } from './op-ledger.store.js';
 import { OpHandlerRegistry } from './op-handler-registry.js';
 import { SyncConfigService } from './sync.config.js';
-import type { SyncOpHandler, SyncOpVerdict } from './sync-seams.js';
+import type { SyncOpHandler, SyncOpHandlerResult } from '../../tracking/sync-seams.js';
 
 // ---------------------------------------------------------------------------
 // fakes (snapshot-rollback transaction semantics)
@@ -134,11 +134,11 @@ class FakeDb {
 /** A recording fake seam handler with a scripted verdict per op. */
 class RecordingHandler implements SyncOpHandler {
   readonly calls: string[] = [];
-  script: (opId: string) => SyncOpVerdict = () => ({ outcome: 'applied' });
+  script: (opId: string) => SyncOpHandlerResult = () => ({ outcome: 'applied' });
 
   constructor(readonly kind: SyncOpHandler['kind']) {}
 
-  async apply(op: { opId: string }): Promise<SyncOpVerdict> {
+  async apply(op: { opId: string }): Promise<SyncOpHandlerResult> {
     this.calls.push(op.opId);
     return this.script(op.opId);
   }

@@ -68,18 +68,17 @@ describe('parseBatchBody — happy shapes (§1.1)', () => {
       const [entry, deletion] = result.value.ops;
       expect(entry?.kind).toBe('diary_entry');
       expect(entry?.localDate).toBe('2026-10-08');
-      expect(entry?.clientUpdatedAt.toISOString()).toBe('2026-10-08T07:00:00.000Z');
-      expect(entry?.clientUpdatedAtIso).toBe('2026-10-08T07:00:00Z');
+      expect(entry?.clientUpdatedAt).toBe('2026-10-08T07:00:00Z'); // the exact client-authored string
       expect(deletion?.action).toBe('delete');
-      expect(deletion?.payload).toBeNull();
+      expect(deletion?.payload).toBeUndefined(); // ABSENT on delete (canonical envelope)
     }
   });
 
-  it('accepts sub-millisecond instants (timestamptz(6) precision preserved in the ISO string)', () => {
+  it('accepts sub-millisecond instants (timestamptz(6) precision preserved in the carried string)', () => {
     const result = parse([validOp({ clientUpdatedAt: '2026-10-08T07:00:00.000123Z' })]);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.ops[0]?.clientUpdatedAtIso).toBe('2026-10-08T07:00:00.000123Z');
+      expect(result.value.ops[0]?.clientUpdatedAt).toBe('2026-10-08T07:00:00.000123Z');
     }
   });
 

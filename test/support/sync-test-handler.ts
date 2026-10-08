@@ -2,14 +2,15 @@
  * TEST-ONLY sync seam handler — NO PRODUCTION SURFACE.
  *
  * The wave-03 contract (§4) freezes the `sync` ↔ `tracking` op-handler
- * registry; the REAL diary/user-food/favorite handlers merge via lanes
- * w03-s2a/w03-s2c. This lane's tests may use a TEST-ONLY handler that
- * implements the frozen seam faithfully at miniature scale, so the
- * ingestion engine's semantics (dedupe, ordering, atomicity, per-op
- * outcomes, Idempotency-Key, cross-user isolation) are provable in-lane:
+ * registry; the REAL user-food/favorite handlers (s2a) and diary handler
+ * (s2c) are registered by the sync module at init in the assembled system.
+ * This handler exists for the lanes' OWN registry-scoped suites (unit fakes
+ * + the integration itspec, which constructs its own registry): it
+ * implements the frozen seam faithfully at miniature scale so the ingestion
+ * engine's semantics (dedupe, ordering, atomicity, per-op outcomes,
+ * Idempotency-Key, cross-user isolation) are provable in isolation, with
+ * deterministic failure injection the real handlers do not offer:
  *
- *  - One handler per kind under test, registered through the PRODUCTION
- *    path (`OpHandlerRegistry.registerOpHandler`) — never a bypass.
  *  - Implements the §1.3 state machine on the REAL `favorites` table
  *    (an adopted, RLS-guarded health table): create-on-active ⇒
  *    `rejected_conflict`; create-on-tombstone / update-on-tombstone ⇒
@@ -18,27 +19,26 @@
  *    `(clientUpdatedAt, opId)` with the REST-row (`last_op_id NULL`) rule.
  *  - Entity-level payload validation yields `rejected_validation`
  *    (validation precedes rate limiting, §1.3).
- *  - A unique-violation on the entity INSERT maps to `rejected_conflict`
- *    — the §5 non-disclosure posture (no HTTP surface distinguishes the
- *    cause; RLS makes a foreign row invisible while the index still
- *    refuses the collision).
- *  - Deterministic failure/rate-limit injection (suite-driven predicates)
- *    exercises the recovery paths (batch rollback, `rejected_rate_limited`
- *    retry semantics).
+ *  - GRANT-FAITHFUL writes only: the favorites UPDATE grant covers the LWW/
+ *    tombstone columns exclusively; a re-favorite is a NEW entity id.
+ *  - Unique-predicate discipline: handlers PRE-READ their unique predicates
+ *    (a 23505 inside the batch transaction poisons it — 25P02 cascade), so
+ *    the deterministic rejection happens before any INSERT; a residual
+ *    23505 (global cross-user entity-id collision — the §5-documented
+ *    refusal — or a cross-request race) PROPAGATES and the engine's batch
+ *    boundary converges it (rollback, zero partial state).
  *
- * What is proven IN-LANE vs DEFERRED (stated in the lane MR): the engine
- * semantics above are proven here; the real handlers' entity behaviors
- * (nutrient snapshots, meal slots, day-boundary rollups, the shared limiter
- * implementation) are s2a/s2c deliverables — combined behavior is proven at
- * the s4/integration stage.
+ * The production e2e suite does NOT use this handler: it exercises the REAL
+ * registered handlers (diary/user_food/favorite) end-to-end, including the
+ * shared limiter's acked-not-recorded `rejected_rate_limited` path.
  */
 import { Prisma } from '../../generated/prisma/client.ts';
 import type {
   SyncOpContext,
   SyncOpEnvelope,
   SyncOpHandler,
-  SyncOpVerdict,
-} from '../../src/sync/ingestion/sync-seams.js';
+  SyncOpHandlerResult,
+} from '../../src/tracking/sync-seams.js';
 
 export interface SyncTestHandlerOptions {
   /** When true for an op, the handler THROWS (infrastructure failure). */
@@ -50,8 +50,8 @@ export interface SyncTestHandlerOptions {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 /** Rejection value helpers. */
-const appliedVerdict: SyncOpVerdict = { outcome: 'applied' };
-function rejected(code: 'rejected_validation' | 'rejected_conflict' | 'rejected_deleted'): SyncOpVerdict {
+const appliedVerdict: SyncOpHandlerResult = { outcome: 'applied' };
+function rejected(code: 'rejected_validation' | 'rejected_conflict' | 'rejected_deleted'): SyncOpHandlerResult {
   return { outcome: 'rejected', code, retryable: false };
 }
 
@@ -80,7 +80,7 @@ export function createFavoriteTestHandler(options: SyncTestHandlerOptions = {}):
   return {
     kind: 'favorite',
 
-    async apply(op: SyncOpEnvelope, ctx: SyncOpContext, tx: Prisma.TransactionClient): Promise<SyncOpVerdict> {
+    async apply(op: SyncOpEnvelope, ctx: SyncOpContext, tx: Prisma.TransactionClient): Promise<SyncOpHandlerResult> {
       if (options.failWhen?.(op) === true) {
         throw new Error('sync-test-handler: injected infrastructure failure');
       }
@@ -99,6 +99,9 @@ export function createFavoriteTestHandler(options: SyncTestHandlerOptions = {}):
         }
       }
 
+      // The canonical envelope carries the exact client-authored instant
+      // STRING; the handler parses it (its own LWW substrate).
+      const clientUpdatedAt = new Date(op.clientUpdatedAt);
       const existing = await (tx as Prisma.TransactionClient).favorite.findFirst({
         where: { id: op.entityId, userId: ctx.userId },
       });
@@ -112,7 +115,8 @@ export function createFavoriteTestHandler(options: SyncTestHandlerOptions = {}):
         // their unique predicates by READING state — a 23505 raised inside
         // the batch transaction poisons it (25P02 cascade), so the
         // deterministic rejection happens before any INSERT (§1.3).
-        const foodId = String(op.payload?.['foodId']);
+        const payload = (op.payload ?? {}) as Record<string, unknown>;
+        const foodId = String(payload['foodId']);
         const activeForFood = await (tx as Prisma.TransactionClient).favorite.findFirst({
           where: { userId: ctx.userId, foodId, deletedAt: null },
         });
@@ -130,7 +134,7 @@ export function createFavoriteTestHandler(options: SyncTestHandlerOptions = {}):
             id: op.entityId,
             userId: ctx.userId,
             foodId,
-            updatedAt: op.clientUpdatedAt,
+            updatedAt: clientUpdatedAt,
             lastOpId: op.opId,
           },
         });
@@ -145,7 +149,7 @@ export function createFavoriteTestHandler(options: SyncTestHandlerOptions = {}):
           return rejected('rejected_deleted');
         }
         // LWW: a loser is recorded applied and changes nothing (§1.3).
-        if (!lwwOpWins(op.clientUpdatedAt, op.opId, existing.updatedAt, existing.lastOpId)) {
+        if (!lwwOpWins(clientUpdatedAt, op.opId, existing.updatedAt, existing.lastOpId)) {
           return appliedVerdict;
         }
         // GRANT-FAITHFUL write: the frozen column matrix gives favorites
@@ -154,7 +158,7 @@ export function createFavoriteTestHandler(options: SyncTestHandlerOptions = {}):
         await (tx as Prisma.TransactionClient).favorite.update({
           where: { id: existing.id },
           data: {
-            updatedAt: op.clientUpdatedAt,
+            updatedAt: clientUpdatedAt,
             lastOpId: op.opId,
           },
         });
@@ -167,7 +171,7 @@ export function createFavoriteTestHandler(options: SyncTestHandlerOptions = {}):
           where: { id: existing.id },
           data: {
             deletedAt: new Date(), // server-side tombstone instant (§1.3)
-            updatedAt: op.clientUpdatedAt,
+            updatedAt: clientUpdatedAt,
             lastOpId: op.opId,
           },
         });
@@ -178,16 +182,17 @@ export function createFavoriteTestHandler(options: SyncTestHandlerOptions = {}):
 }
 
 /** Mini payload validation — `foodId` must be a UUID; no negative numbers. */
-function validateFavoritePayload(op: SyncOpEnvelope): SyncOpVerdict | null {
+function validateFavoritePayload(op: SyncOpEnvelope): SyncOpHandlerResult | null {
   const payload = op.payload;
-  if (payload === null) {
+  if (payload === null || payload === undefined || typeof payload !== 'object') {
     return rejected('rejected_validation');
   }
-  const foodId = payload['foodId'];
+  const record = payload as Record<string, unknown>;
+  const foodId = record['foodId'];
   if (typeof foodId !== 'string' || !UUID_PATTERN.test(foodId)) {
     return rejected('rejected_validation');
   }
-  for (const value of Object.values(payload)) {
+  for (const value of Object.values(record)) {
     if (typeof value === 'number' && Number.isFinite(value) && value < 0) {
       return rejected('rejected_validation');
     }

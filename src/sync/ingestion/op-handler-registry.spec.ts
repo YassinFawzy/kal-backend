@@ -7,9 +7,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { OpHandlerRegistry } from './op-handler-registry.js';
-import type { SyncOpHandler } from './sync-seams.js';
+import type { SyncOpHandler, SyncOpKind } from '../../tracking/sync-seams.js';
 
-function fakeHandler(kind: SyncOpHandler['kind']): SyncOpHandler {
+function fakeHandler(kind: SyncOpKind): SyncOpHandler {
   return {
     kind,
     apply: async () => ({ outcome: 'applied' }),

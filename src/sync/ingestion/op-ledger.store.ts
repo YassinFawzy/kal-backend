@@ -19,7 +19,7 @@
  * verified caller binding and RLS hides every foreign row.
  */
 import { Prisma } from '../../../generated/prisma/client.ts';
-import type { RejectionCode } from './sync-seams.js';
+import type { RejectionCode } from '../../tracking/sync-seams.js';
 
 /** The recorded final outcome of a previously ingested op (replay view). */
 export interface RecordedSyncOp {
@@ -37,8 +37,9 @@ export interface InsertRecordedInput {
   readonly entityId: string;
   readonly localDate: string | null;
   /** Exact client-authored ISO instant (timestamptz(6) fidelity). */
-  readonly clientUpdatedAtIso: string;
-  readonly payload: Readonly<Record<string, unknown>> | null;
+  readonly clientUpdatedAt: string;
+  /** The canonical envelope's payload snapshot (object) — absent for deletes. */
+  readonly payload: unknown;
   readonly outcome: 'applied' | 'rejected';
   readonly rejectionCode?: RejectionCode;
   readonly retryable?: boolean;
@@ -95,10 +96,13 @@ export class OpLedgerStore {
               new Date(`${input.localDate}T00:00:00Z`),
         // NOTE: the ledger instant is driver millisecond precision (the
         // ledger row is never an LWW input — it is the dedupe/replay
-        // record). Handler-side comparators use the envelope's exact
-        // `clientUpdatedAtIso` (see sync-seams.ts).
-        clientUpdatedAt: new Date(input.clientUpdatedAtIso),
-        payload: input.payload === null ? Prisma.DbNull : (input.payload as Prisma.InputJsonValue),
+        // record). Handler-side comparators parse the envelope's exact
+        // `clientUpdatedAt` string (canonical seam type).
+        clientUpdatedAt: new Date(input.clientUpdatedAt),
+        payload:
+          input.payload === null || input.payload === undefined
+            ? Prisma.DbNull
+            : (input.payload as Prisma.InputJsonValue),
         outcome: input.outcome,
         ...(input.rejectionCode === undefined
           ? {}
