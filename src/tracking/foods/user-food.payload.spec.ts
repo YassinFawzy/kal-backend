@@ -68,12 +68,13 @@ describe('validateUserFoodPayload', () => {
     expect(validateUserFoodPayload({ ...VALID, servings: [{ grams: -5 }] }).ok).toBe(false);
     expect(validateUserFoodPayload({ ...VALID, servings: [{ grams: '300' }] }).ok).toBe(false);
     expect(validateUserFoodPayload({ ...VALID, servings: [{ grams: 300 }] }).ok).toBe(true);
+    expect(validateUserFoodPayload({ ...VALID, servings: [{ grams: 300 }, { grams: 50 }] }).ok).toBe(false);
   });
 
-  it('bounds the serving array and rejects non-object servings', () => {
+  it('at most ONE active serving per user food (schema partial-unique freeze); rejects non-object servings', () => {
     const tooMany = validateUserFoodPayload({
       ...VALID,
-      servings: Array.from({ length: 21 }, () => ({ grams: 10 })),
+      servings: [{ grams: 10 }, { grams: 20 }],
     });
     expect(tooMany.ok).toBe(false);
     expect(validateUserFoodPayload({ ...VALID, servings: 'two bowls' }).ok).toBe(false);

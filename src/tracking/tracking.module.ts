@@ -15,10 +15,8 @@
  * (`app-role-tx.ts` — F1 pool guidance: never session-level GUCs).
  *
  * Normalization binding: the frozen §7 pipeline is consumed through the
- * `TRACKING_NORMALIZER` port. INTERIM binding below = the in-lane
- * `interim-normalizer.ts` (rule-faithful §7 implementation) used until lane
- * s2b's merged module lands; the binding swaps to it at rebase and the
- * interim file is deleted.
+ * `TRACKING_NORMALIZER` port, bound to lane s2b's merged pure module
+ * (`src/tracking/normalization/normalization.ts` — single export `normalize`).
  */
 import { Module } from '@nestjs/common';
 import { ConfigService } from '../config/config.service.js';
@@ -31,8 +29,8 @@ import { FavoriteDeltaProvider, UserFoodDeltaProvider } from './foods/foods-delt
 import { FoodsController } from './foods/foods.controller.js';
 import { FoodsRepository } from './foods/foods.repository.js';
 import { FoodsService } from './foods/foods.service.js';
-import { normalizeArabicLatin } from './foods/interim-normalizer.js';
 import { TRACKING_NORMALIZER } from './foods/normalizer.port.js';
+import { normalize } from './normalization/normalization.js';
 import { TrackingConfigService } from './foods/tracking.config.js';
 import { UserFoodOpHandler } from './foods/user-food-op.handler.js';
 import { UserFoodRateLimiter } from './foods/user-food-rate-limiter.js';
@@ -50,10 +48,11 @@ import { UserFoodRateLimiter } from './foods/user-food-rate-limiter.js';
       inject: [ConfigService],
     },
     {
-      // INTERIM (pre-rebase): in-lane rule-faithful §7 pipeline. Swapped for
-      // s2b's merged `src/tracking/normalization/**` at rebase.
+      // The frozen §7 normalization pipeline — lane s2b's merged pure module
+      // (single export `normalize`); writers apply it to stored forms, search
+      // normalizes the query once (contract §7).
       provide: TRACKING_NORMALIZER,
-      useFactory: () => ({ normalize: normalizeArabicLatin }),
+      useFactory: () => ({ normalize }),
     },
     {
       // The Open Food Facts adapter seam (FR-017) — W3 binding: recorded-

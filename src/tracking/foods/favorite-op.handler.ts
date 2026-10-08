@@ -17,12 +17,13 @@
  * (the partial unique index is the structural backstop).
  */
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '../../../generated/prisma/client.ts';
+import type { Prisma } from '../../../generated/prisma/client.ts';
 import { isUuid } from '../../request-context/user-context.js';
 import type { SyncOpContext, SyncOpEnvelope, SyncOpHandler, SyncOpHandlerResult } from '../sync-seams.js';
 import { FoodsRepository } from './foods.repository.js';
 import { lwwOpWins } from './lww.js';
 import { validateFavoritePayload, type FavoritePayload } from './user-food.payload.js';
+import { rawWriteConstraintClass } from './raw-write-error.js';
 
 const applied: SyncOpHandlerResult = { outcome: 'applied' };
 function rejected(code: 'rejected_validation' | 'rejected_rate_limited' | 'rejected_conflict' | 'rejected_deleted', retryable: boolean): SyncOpHandlerResult {
@@ -72,13 +73,12 @@ export class FavoriteOpHandler implements SyncOpHandler {
             opId: op.opId,
           });
         } catch (error) {
-          if (error instanceof Prisma.PrismaClientKnownRequestError) {
-            if (error.code === 'P2002') {
-              return rejected('rejected_conflict', false); // active duplicate for the same target
-            }
-            if (error.code === 'P2003') {
-              return rejected('rejected_validation', false); // broken reference raced past the pre-check
-            }
+          const constraint = rawWriteConstraintClass(error);
+          if (constraint === 'unique') {
+            return rejected('rejected_conflict', false); // active duplicate for the same target
+          }
+          if (constraint === 'foreign_key') {
+            return rejected('rejected_validation', false); // broken reference raced past the pre-check
           }
           throw error;
         }

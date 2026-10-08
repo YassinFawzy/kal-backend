@@ -47,9 +47,10 @@ export class UserFoodRateLimiter {
     const maxPerDay = this.config.values.userFoodCreateMaxPerDay;
 
     // Ensure the single per-account row exists (first tick races resolve on
-    // the primary key), then lock it for the check-and-tick.
+    // the primary key). The row is created at ZERO — the single +1 tick is
+    // the UPDATE below, so exactly one tick lands per applied create.
     await tx.$queryRaw`INSERT INTO user_food_create_counters (user_id, hour_window_start, hour_count, day_window_start, day_count)
-      VALUES (${userId}::uuid, now(), 1, now(), 1)
+      VALUES (${userId}::uuid, now(), 0, now(), 0)
       ON CONFLICT (user_id) DO NOTHING`;
     const locked = await tx.$queryRaw<CounterRow[]>`SELECT hour_window_start, hour_count, day_window_start, day_count
       FROM user_food_create_counters WHERE user_id = ${userId}::uuid FOR UPDATE`;

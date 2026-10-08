@@ -53,13 +53,9 @@ const LIMIT_MAX = 100;
 const BARCODE_PATTERN = /^[0-9]{8,14}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
-export interface FoodSearchItem {
-  readonly id: string;
-  readonly food: FoodItemProjection;
-}
-
 export interface FoodSearchResponse {
-  readonly data: readonly FoodSearchItem[];
+  /** `data` is a list OF FOOD projections (contract §2: `200 {data: [food], nextCursor}`). */
+  readonly data: readonly FoodItemProjection[];
   readonly nextCursor: string | null;
 }
 
@@ -145,16 +141,16 @@ export class FoodsService {
       const platformById = new Map(platformRows.map((row) => [row.id, row]));
       const userById = new Map(userRows.map((row) => [row.id, row]));
 
-      const data: FoodSearchItem[] = [];
+      const data: FoodItemProjection[] = [];
       for (const entry of entries) {
         const platform = platformById.get(entry.id);
         if (platform !== undefined) {
-          data.push({ id: platform.id, food: projectPlatformFood(platform) });
+          data.push(projectPlatformFood(platform));
           continue;
         }
         const own = userById.get(entry.id);
         if (own !== undefined) {
-          data.push({ id: own.id, food: projectUserFoodItem(own) });
+          data.push(projectUserFoodItem(own));
         }
       }
 
@@ -326,8 +322,14 @@ export class FoodsService {
         clientUpdatedAt,
         lastOpId: null,
       });
-      // Re-read through the caller-scoped predicate — immediately visible to
-      // the owner's REST reads and delta feed (contract §2).
+      // The serving set rides the same unit of work; then re-read through the
+      // caller-scoped predicate — immediately visible to the owner's REST
+      // reads and delta feed (contract §2).
+      await this.repository.insertUserFoodServings(tx, {
+        userId,
+        userFoodId: insertedId,
+        servings: validated.value.servings,
+      });
       const created = await this.repository.findUserFoodIncludingDeleted(tx, userId, insertedId);
       if (created === null) {
         throw new KalProblemException('INTERNAL_ERROR');

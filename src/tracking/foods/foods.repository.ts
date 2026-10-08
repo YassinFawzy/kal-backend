@@ -258,6 +258,15 @@ export class FoodsRepository {
     return tx.userFood.findMany({ where: { id: { in: [...ids] }, userId, deletedAt: null } });
   }
 
+  /** Delta hydration — the caller's rows by id (tombstones included). */
+  findManyOwnUserFoodsIncludingDeleted(tx: TrackingTx, userId: string, ids: readonly string[]): Promise<UserFood[]> {
+    return tx.userFood.findMany({ where: { id: { in: [...ids] }, userId } });
+  }
+
+  findManyOwnFavorites(tx: TrackingTx, userId: string, ids: readonly string[]): Promise<Favorite[]> {
+    return tx.favorite.findMany({ where: { id: { in: [...ids] }, userId } });
+  }
+
   /**
    * Applies a winning create/update snapshot: names + normalized projections
    * + macros + the LWW columns (stored `updated_at` = the op's
@@ -353,35 +362,55 @@ export class FoodsRepository {
   // Delta pages (contract §1.6 — per-kind, deterministic order, strictly after)
   // -------------------------------------------------------------------------
 
-  async userFoodChangesPage(
+  /**
+   * Minimal change-page rows for the delta providers (raw SQL, explicitly
+   * aliased to camelCase — never SELECT *, whose snake_case keys would not
+   * match the typed model). Ordering is the frozen (updatedAt, entityId)
+   * ascending; the page fetches limit+1 so callers can detect exhaustion.
+   * Providers hydrate full rows through the caller-scoped typed client.
+   */
+  async userFoodChangePage(
     tx: TrackingTx,
     userId: string,
     cursor: { readonly updatedAt: string; readonly entityId: string } | null,
     limit: number,
-  ): Promise<{ rows: UserFood[]; exhausted: boolean }> {
-    const cursorFilter = cursor
-      ? Prisma.sql`AND (date_trunc('millisecond', updated_at), id::text) > (${cursor.updatedAt}::timestamptz, ${cursor.entityId}::text)`
-      : Prisma.empty;
-    const rows = await tx.$queryRaw<UserFood[]>`SELECT * FROM user_foods
-      WHERE user_id = ${userId}::uuid ${cursorFilter}
+  ): Promise<ChangePage> {
+    const rows = await tx.$queryRaw<ChangePageRow[]>`SELECT id::text AS "id", updated_at AS "updatedAt", deleted_at AS "deletedAt"
+      FROM user_foods
+      WHERE user_id = ${userId}::uuid ${cursorFilter(cursor)}
       ORDER BY date_trunc('millisecond', updated_at) ASC, id::text ASC
       LIMIT ${limit + 1}`;
     return { rows: rows.slice(0, limit), exhausted: rows.length > limit };
   }
 
-  async favoriteChangesPage(
+  async favoriteChangePage(
     tx: TrackingTx,
     userId: string,
     cursor: { readonly updatedAt: string; readonly entityId: string } | null,
     limit: number,
-  ): Promise<{ rows: Favorite[]; exhausted: boolean }> {
-    const cursorFilter = cursor
-      ? Prisma.sql`AND (date_trunc('millisecond', updated_at), id::text) > (${cursor.updatedAt}::timestamptz, ${cursor.entityId}::text)`
-      : Prisma.empty;
-    const rows = await tx.$queryRaw<Favorite[]>`SELECT * FROM favorites
-      WHERE user_id = ${userId}::uuid ${cursorFilter}
+  ): Promise<ChangePage> {
+    const rows = await tx.$queryRaw<ChangePageRow[]>`SELECT id::text AS "id", updated_at AS "updatedAt", deleted_at AS "deletedAt"
+      FROM favorites
+      WHERE user_id = ${userId}::uuid ${cursorFilter(cursor)}
       ORDER BY date_trunc('millisecond', updated_at) ASC, id::text ASC
       LIMIT ${limit + 1}`;
     return { rows: rows.slice(0, limit), exhausted: rows.length > limit };
   }
+}
+
+export interface ChangePageRow {
+  readonly id: string;
+  readonly updatedAt: Date;
+  readonly deletedAt: Date | null;
+}
+
+export interface ChangePage {
+  readonly rows: ChangePageRow[];
+  readonly exhausted: boolean;
+}
+
+function cursorFilter(cursor: { readonly updatedAt: string; readonly entityId: string } | null): Prisma.Sql {
+  return cursor === null
+    ? Prisma.empty
+    : Prisma.sql`AND (date_trunc('millisecond', updated_at), id::text) > (${cursor.updatedAt}::timestamptz, ${cursor.entityId}::text)`;
 }

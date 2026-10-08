@@ -13,13 +13,14 @@
  * plus the LWW comparator guarantee a re-applied op changes nothing.
  */
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '../../../generated/prisma/client.ts';
+import type { Prisma } from '../../../generated/prisma/client.ts';
 import { isUuid } from '../../request-context/user-context.js';
 import type { SyncOpContext, SyncOpEnvelope, SyncOpHandler, SyncOpHandlerResult } from '../sync-seams.js';
 import { FoodsRepository } from './foods.repository.js';
 import { lwwOpWins } from './lww.js';
 import { UserFoodRateLimiter } from './user-food-rate-limiter.js';
 import { validateUserFoodPayload } from './user-food.payload.js';
+import { rawWriteConstraintClass } from './raw-write-error.js';
 
 const applied: SyncOpHandlerResult = { outcome: 'applied' };
 function rejected(code: 'rejected_validation' | 'rejected_rate_limited' | 'rejected_conflict' | 'rejected_deleted', retryable: boolean): SyncOpHandlerResult {
@@ -79,7 +80,7 @@ export class UserFoodOpHandler implements SyncOpHandler {
             lastOpId: op.opId,
           });
         } catch (error) {
-          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+          if (rawWriteConstraintClass(error) === 'unique') {
             return rejected('rejected_conflict', false); // concurrent same-entity create
           }
           throw error; // database failure aborts the batch (§1.2)

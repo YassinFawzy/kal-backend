@@ -12,9 +12,11 @@
  *     bounded by the columns (DECIMAL(9,2) energy / DECIMAL(9,3) macros) so
  *     validation failures surface as `rejected_validation` / 400 — never as
  *     500s from constraint violations.
- *   - `servings`: optional array (absent ⇒ none) of ≤ 20 variants
- *     `{ labelEn?, labelAr?, grams }` — `grams` REQUIRED finite > 0 (a
- *     serving must resolve to a gram weight, FR-012).
+ *   - `servings`: optional array (absent ⇒ none) of AT MOST ONE variant
+ *     `{ labelEn?, labelAr?, grams }` — the schema's partial unique index
+ *     (`user_food_servings_active_per_food_key`) allows exactly one ACTIVE
+ *     serving per user food (update ops replace the set); `grams` REQUIRED
+ *     finite > 0 (a serving must resolve to a gram weight, FR-012).
  *
  * Validation failures NEVER echo received values (I12): errors carry
  * structural field paths + generic constraint messages only.
@@ -25,7 +27,7 @@ import { isUuid } from '../../request-context/user-context.js';
 export const ENERGY_MAX = 9_999_999.99;
 export const MACRO_MAX = 999_999.999;
 export const NAME_MAX_LENGTH = 200;
-export const SERVINGS_MAX_COUNT = 20;
+export const SERVINGS_MAX_COUNT = 1;
 
 /** One validation error — structural path + generic message (no values, I12). */
 export interface PayloadFieldError {

@@ -43,8 +43,11 @@ describe('UserFoodDeltaProvider', () => {
       labelAr: null,
       grams: { toNumber: () => 50 } as never,
     } as UserFoodServing;
+    const row = userFoodRow();
     const repo = {
-      userFoodChangesPage: () => Promise.resolve({ rows: [userFoodRow()], exhausted: true }),
+      userFoodChangePage: () =>
+        Promise.resolve({ rows: [{ id: row.id, updatedAt: row.updatedAt, deletedAt: row.deletedAt }], exhausted: true }),
+      findManyOwnUserFoodsIncludingDeleted: () => Promise.resolve([row]),
       listActiveServingsForMany: () => Promise.resolve([serving]),
     } as unknown as FoodsRepository;
     const { changes, exhausted } = await new UserFoodDeltaProvider(repo).changesSince(null, 50, CTX, {} as never);
@@ -63,9 +66,11 @@ describe('UserFoodDeltaProvider', () => {
   });
 
   it('maps a tombstoned row to a payload-less delete (tombstones propagate, §1.5)', async () => {
+    const row = userFoodRow({ deletedAt: new Date('2026-10-08T08:00:00.000Z') });
     const repo = {
-      userFoodChangesPage: () =>
-        Promise.resolve({ rows: [userFoodRow({ deletedAt: new Date('2026-10-08T08:00:00.000Z') })], exhausted: false }),
+      userFoodChangePage: () =>
+        Promise.resolve({ rows: [{ id: row.id, updatedAt: row.updatedAt, deletedAt: row.deletedAt }], exhausted: false }),
+      findManyOwnUserFoodsIncludingDeleted: () => Promise.resolve([row]),
       listActiveServingsForMany: () => Promise.resolve([]),
     } as unknown as FoodsRepository;
     const { changes } = await new UserFoodDeltaProvider(repo).changesSince(null, 50, CTX, {} as never);
@@ -93,7 +98,15 @@ describe('FavoriteDeltaProvider', () => {
     } as Favorite;
     const tombstoned = { ...favorite, id: '88888888-8888-4888-8888-888888888888', deletedAt: T0 } as Favorite;
     const repo = {
-      favoriteChangesPage: () => Promise.resolve({ rows: [favorite, tombstoned], exhausted: false }),
+      favoriteChangePage: () =>
+        Promise.resolve({
+          rows: [
+            { id: favorite.id, updatedAt: favorite.updatedAt, deletedAt: favorite.deletedAt },
+            { id: tombstoned.id, updatedAt: tombstoned.updatedAt, deletedAt: tombstoned.deletedAt },
+          ],
+          exhausted: false,
+        }),
+      findManyOwnFavorites: () => Promise.resolve([favorite, tombstoned]),
     } as unknown as FoodsRepository;
     const { changes } = await new FavoriteDeltaProvider(repo).changesSince(null, 50, CTX, {} as never);
     expect(changes[0]).toMatchObject({ kind: 'favorite', change: 'upsert', payload: { foodId: '00000000-0000-4000-8000-00000000f001', userFoodId: null } });

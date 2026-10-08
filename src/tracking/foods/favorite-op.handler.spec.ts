@@ -137,13 +137,17 @@ describe('FavoriteOpHandler — §1.3 state machine', () => {
       .toEqual({ outcome: 'rejected', code: 'rejected_deleted', retryable: false });
   });
 
-  it('a DB duplicate-active insert (P2002 on the partial unique) maps to rejected_conflict', async () => {
+  it('a DB duplicate-active insert (raw 23505 on the partial unique) maps to rejected_conflict', async () => {
     const repo = {
       findFavoriteIncludingDeleted: () => Promise.resolve(null),
       findFood: (_tx: unknown, id: string) => Promise.resolve({ id } as never),
       findUserFoodIncludingDeleted: () => Promise.resolve(null),
       insertFavorite: () => {
-        throw new Prisma.PrismaClientKnownRequestError('unique', { code: 'P2002', clientVersion: 'test' });
+        throw new Prisma.PrismaClientKnownRequestError('Raw query failed', {
+          code: 'P2010',
+          clientVersion: 'test',
+          meta: { driverAdapterError: { cause: { code: '23505', originalCode: '23505' } } },
+        });
       },
     } as unknown as FoodsRepository;
     const outcome = await new FavoriteOpHandler(repo).apply(op('create', { foodId: FOOD }), CTX_A, {} as never);

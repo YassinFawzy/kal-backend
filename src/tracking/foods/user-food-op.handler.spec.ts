@@ -194,11 +194,15 @@ describe('UserFoodOpHandler — §1.3 state machine', () => {
     expect(state.inserted).toBe(0);
   });
 
-  it('a concurrent-duplicate insert (P2002 from the DB) maps to rejected_conflict — never a batch abort', async () => {
+  it('a concurrent-duplicate insert (raw 23505 via P2010) maps to rejected_conflict — never a batch abort', async () => {
     const racing = {
       findUserFoodIncludingDeleted: () => Promise.resolve(null),
       insertUserFood: () => {
-        throw new Prisma.PrismaClientKnownRequestError('unique', { code: 'P2002', clientVersion: 'test' });
+        throw new Prisma.PrismaClientKnownRequestError('Raw query failed', {
+          code: 'P2010',
+          clientVersion: 'test',
+          meta: { driverAdapterError: { cause: { code: '23505', originalCode: '23505' } } },
+        });
       },
     } as unknown as FoodsRepository;
     const outcome = await new UserFoodOpHandler(racing, makeLimiter().limiter).apply(op('create'), CTX, {} as never);

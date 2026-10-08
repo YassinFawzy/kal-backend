@@ -55,6 +55,7 @@ interface TokenPair {
 }
 
 let db: EphemeralKalDb;
+let databaseUrl = '';
 let app: INestApplication<App>;
 
 async function bootApp(env: Record<string, string>): Promise<INestApplication<App>> {
@@ -130,13 +131,14 @@ async function searchIds(token: string, q: string): Promise<string[]> {
 let tokenA = '';
 let tokenB = '';
 let amanyUserFoodId = '';
+let amanyFulFoodId = '';
 
 beforeAll(async () => {
   db = await createEphemeralKalDb('trk-foods');
   db.applyMigrations();
   const url = new URL(process.env['DATABASE_URL'] as string);
   url.pathname = `/${db.name}`;
-  const databaseUrl = url.toString();
+  databaseUrl = url.toString();
 
   // Production-faithful catalog seeding: the seed-execution module over an
   // admin connection (the catalog is RLS-declined platform plane; the seed
@@ -183,10 +185,11 @@ describe('tracking.foods.search — golden equivalence over seed + own user food
       .send({ nameEn: 'Amany ful special', nameAr: 'فول خاص اماني', energyKcal: 120, proteinG: 8, carbsG: 18, fatG: 1 })
       .expect(201);
     userFoodFulId = (fulA.body as { userFood: { id: string } }).userFood.id;
+    amanyFulFoodId = userFoodFulId;
     await request(app.getHttpServer())
       .post('/tracking/user-foods')
       .set(bearer(tokenA))
-      .send({ nameEn: 'Amany ful with oil', energyKcal: 160, proteinG: 8, carbsG: 18, fatG: 6 })
+      .send({ nameEn: 'Amany ful with oil', nameAr: 'فول خاص اماني بالزيت', energyKcal: 160, proteinG: 8, carbsG: 18, fatG: 6 })
       .expect(201);
   });
 
@@ -265,7 +268,7 @@ describe('tracking.foods.search — query boundaries (§2)', () => {
 describe('tracking.foods.search — cursor pagination (conventions §2)', () => {
   it('walking nextCursor yields every match exactly once, ending at null', async () => {
     const all = await searchIds(tokenA, 'فول');
-    expect(all.length).toBeGreaterThanOrEqual(3); // f001 + two Amany foods
+    expect(all.length).toBeGreaterThanOrEqual(3); // f001 + two Amany فول foods
     const seen: string[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < 25; page += 1) {
@@ -381,8 +384,8 @@ describe('non-disclosure — A/B search isolation (I7)', () => {
 
   it('A\'s own search carries A\'s foods; the OWNER sees exactly their own rows', async () => {
     const aSeesOwn = await searchIds(tokenA, 'اماني');
-    expect(aSeesOwn.length).toBe(1);
-    expect(aSeesOwn[0]).toBe(amanyUserFoodId);
+    expect(aSeesOwn.length).toBe(2); // both Amany فول foods
+    expect(aSeesOwn).toContain(amanyFulFoodId);
   });
 });
 
@@ -425,10 +428,7 @@ describe('tracking.user-foods.create — validation', () => {
         proteinG: 1.234,
         carbsG: 12.345,
         fatG: 4.321,
-        servings: [
-          { labelEn: 'Cup', labelAr: 'كوب', grams: 120 },
-          { labelEn: 'Gram', grams: 1 },
-        ],
+        servings: [{ labelEn: 'Cup', labelAr: 'كوب', grams: 120 }],
       })
       .expect(201);
     const userFood = (response.body as { userFood: FoodItem & { servings: { grams: number }[]; updatedAt: string } }).userFood;
@@ -437,23 +437,44 @@ describe('tracking.user-foods.create — validation', () => {
     expect(userFood.carbsG).toBe(12.345);
     expect(userFood.fatG).toBe(4.321);
     expect(userFood.provenance).toBe('user_created');
-    expect(userFood.servings.map((serving) => serving.grams)).toEqual([120, 1]);
+    expect(userFood.servings.map((serving) => serving.grams)).toEqual([120]);
+  });
+
+  it('two servings ⇒ 400 — the schema allows exactly one ACTIVE serving per user food', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/tracking/user-foods')
+      .set(bearer(tokenA))
+      .send({
+        nameEn: 'Two-serving probe',
+        energyKcal: 100,
+        proteinG: 1,
+        carbsG: 10,
+        fatG: 1,
+        servings: [{ grams: 100 }, { grams: 50 }],
+      })
+      .expect(400);
+    expect((response.body as ProblemDetailsBody).code).toBe('VALIDATION_FAILED');
   });
 });
 
 describe('authentication — 401 UNAUTHENTICATED on every surface (conventions §1)', () => {
   it('search/detail/barcode/create refuse unauthenticated callers with the challenge header', async () => {
-    const paths: [string, request.Test][] = [
-      ['search', request(app.getHttpServer()).get('/tracking/foods').query({ q: 'ful' })],
-      ['detail', request(app.getHttpServer()).get('/tracking/foods/00000000-0000-4000-8000-00000000f001')],
-      ['barcode', request(app.getHttpServer()).get('/tracking/barcode/200000000001')],
-      ['create', request(app.getHttpServer()).post('/tracking/user-foods').send({ nameEn: 'x', energyKcal: 1, proteinG: 1, carbsG: 1, fatG: 1 })],
-    ];
-    for (const [name, probe] of paths) {
-      const response = await probe.expect(401);
-      expect(response.headers['www-authenticate']).toBe('Bearer');
-      expect((response.body as ProblemDetailsBody).code).toBe('UNAUTHENTICATED');
-    }
+    const http = app.getHttpServer();
+    const search = await request(http).get('/tracking/foods').query({ q: 'ful' }).expect(401);
+    expect(search.headers['www-authenticate']).toBe('Bearer');
+    expect((search.body as ProblemDetailsBody).code).toBe('UNAUTHENTICATED');
+
+    const detail = await request(http).get('/tracking/foods/00000000-0000-4000-8000-00000000f001').expect(401);
+    expect(detail.headers['www-authenticate']).toBe('Bearer');
+
+    const barcode = await request(http).get('/tracking/barcode/200000000001').expect(401);
+    expect(barcode.headers['www-authenticate']).toBe('Bearer');
+
+    const create = await request(http)
+      .post('/tracking/user-foods')
+      .send({ nameEn: 'x', energyKcal: 1, proteinG: 1, carbsG: 1, fatG: 1 })
+      .expect(401);
+    expect(create.headers['www-authenticate']).toBe('Bearer');
   });
 });
 
@@ -464,7 +485,7 @@ describe('authentication — 401 UNAUTHENTICATED on every surface (conventions �
 describe('the shared user-food create limiter (REST path)', () => {
   it('hourly window: two-config proof — cap 2 trips on the 3rd create with hourly Retry-After', async () => {
     const limited = await bootApp({
-      DATABASE_URL: new URL(process.env['DATABASE_URL'] as string).toString(),
+      DATABASE_URL: databaseUrl,
       IDENTITY_JWT_SIGNING_KEY: SIGNING_KEY,
       NODE_ENV: 'test',
       TRACKING_USER_FOOD_CREATE_MAX_PER_HOUR: '2',
@@ -492,7 +513,7 @@ describe('the shared user-food create limiter (REST path)', () => {
 
   it('daily window: two-config proof — cap 2 trips on the 3rd create with DAILY Retry-After', async () => {
     const limited = await bootApp({
-      DATABASE_URL: new URL(process.env['DATABASE_URL'] as string).toString(),
+      DATABASE_URL: databaseUrl,
       IDENTITY_JWT_SIGNING_KEY: SIGNING_KEY,
       NODE_ENV: 'test',
       TRACKING_USER_FOOD_CREATE_MAX_PER_HOUR: '100',

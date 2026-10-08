@@ -7,6 +7,11 @@
  * tombstones propagate so a stale pull can never resurrect a deleted row
  * (§1.5). Sync owns cursor mint/verify and the cross-kind merge; these
  * providers only page their own tables under the caller's binding (I1/I2).
+ *
+ * Page identity/order comes from the repository's raw page (minimal aliased
+ * columns); full rows are then HYDRATED through the caller-scoped typed
+ * client (explicit predicate, camelCase model fields — the ordering key is
+ * carried separately so hydration order never matters).
  */
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client.ts';
@@ -31,7 +36,13 @@ export class UserFoodDeltaProvider implements TrackingDeltaProvider {
     ctx: SyncOpContext,
     tx: Prisma.TransactionClient,
   ): Promise<{ changes: DeltaChange[]; exhausted: boolean }> {
-    const { rows, exhausted } = await this.repository.userFoodChangesPage(tx, ctx.userId, cursor, limit);
+    const page = await this.repository.userFoodChangePage(tx, ctx.userId, cursor, limit);
+    const rows = await this.repository.findManyOwnUserFoodsIncludingDeleted(
+      tx,
+      ctx.userId,
+      page.rows.map((row) => row.id),
+    );
+    const rowById = new Map(rows.map((row) => [row.id, row]));
     const servings = await this.repository.listActiveServingsForMany(tx, ctx.userId, rows.map((row) => row.id));
     const byFood = new Map<string, typeof servings>();
     for (const serving of servings) {
@@ -39,19 +50,23 @@ export class UserFoodDeltaProvider implements TrackingDeltaProvider {
       list.push(serving);
       byFood.set(serving.userFoodId, list);
     }
-    const changes: DeltaChange[] = rows.map((row) => {
-      if (row.deletedAt !== null) {
-        return { kind: this.kind, entityId: row.id, change: 'delete' as const, updatedAt: msIso(row.updatedAt) };
+    const changes: DeltaChange[] = page.rows.flatMap((pageRow): DeltaChange[] => {
+      const row = rowById.get(pageRow.id);
+      if (row === undefined) {
+        return []; // unobservable: page ids come from the same scoped tables
       }
-      return {
+      if (row.deletedAt !== null) {
+        return [{ kind: this.kind, entityId: row.id, change: 'delete' as const, updatedAt: msIso(row.updatedAt) }];
+      }
+      return [{
         kind: this.kind,
         entityId: row.id,
         change: 'upsert' as const,
         updatedAt: msIso(row.updatedAt),
         payload: projectUserFood(row, byFood.get(row.id) ?? []),
-      };
+      }];
     });
-    return { changes, exhausted };
+    return { changes, exhausted: page.exhausted };
   }
 }
 
@@ -67,19 +82,29 @@ export class FavoriteDeltaProvider implements TrackingDeltaProvider {
     ctx: SyncOpContext,
     tx: Prisma.TransactionClient,
   ): Promise<{ changes: DeltaChange[]; exhausted: boolean }> {
-    const { rows, exhausted } = await this.repository.favoriteChangesPage(tx, ctx.userId, cursor, limit);
-    const changes: DeltaChange[] = rows.map((row) => {
-      if (row.deletedAt !== null) {
-        return { kind: this.kind, entityId: row.id, change: 'delete' as const, updatedAt: msIso(row.updatedAt) };
+    const page = await this.repository.favoriteChangePage(tx, ctx.userId, cursor, limit);
+    const rows = await this.repository.findManyOwnFavorites(
+      tx,
+      ctx.userId,
+      page.rows.map((row) => row.id),
+    );
+    const rowById = new Map(rows.map((row) => [row.id, row]));
+    const changes: DeltaChange[] = page.rows.flatMap((pageRow): DeltaChange[] => {
+      const row = rowById.get(pageRow.id);
+      if (row === undefined) {
+        return [];
       }
-      return {
+      if (row.deletedAt !== null) {
+        return [{ kind: this.kind, entityId: row.id, change: 'delete' as const, updatedAt: msIso(row.updatedAt) }];
+      }
+      return [{
         kind: this.kind,
         entityId: row.id,
         change: 'upsert' as const,
         updatedAt: msIso(row.updatedAt),
         payload: projectFavorite(row),
-      };
+      }];
     });
-    return { changes, exhausted };
+    return { changes, exhausted: page.exhausted };
   }
 }
