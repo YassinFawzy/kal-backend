@@ -3,6 +3,7 @@ import { USER_CONTEXT_RESOLVER } from './user-context.resolver.js';
 import { UserContextGuard } from './user-context.guard.js';
 import { NoUserContextResolver } from './user-context.resolver.js';
 import { RequestContextMiddleware } from './request-context.middleware.js';
+import { RequestLoggingMiddleware } from './request-logging.middleware.js';
 import { RequestContextService } from './request-context.service.js';
 
 /**
@@ -15,9 +16,10 @@ import { RequestContextService } from './request-context.service.js';
   providers: [
     RequestContextService,
     RequestContextMiddleware,
+    RequestLoggingMiddleware,
     { provide: USER_CONTEXT_RESOLVER, useClass: NoUserContextResolver },
     UserContextGuard,
   ],
-  exports: [RequestContextService, RequestContextMiddleware, USER_CONTEXT_RESOLVER, UserContextGuard],
+  exports: [RequestContextService, RequestContextMiddleware, RequestLoggingMiddleware, USER_CONTEXT_RESOLVER, UserContextGuard],
 })
 export class RequestContextMenu {}

@@ -6,7 +6,7 @@ import { DbModule } from './db/db.module.js';
 import { HealthModule } from './health/health.module.js';
 import { IdentityModule } from './identity/identity.module.js';
 import { ProblemsModule } from './problems/problems.module.js';
-import { RequestContextMiddleware } from './request-context/index.js';
+import { RequestContextMiddleware, RequestLoggingMiddleware } from './request-context/index.js';
 import { SchedulerModule } from './scheduler/scheduler.module.js';
 import { TrackingModule } from './tracking/tracking.module.js';
 import { SyncModule } from './sync/sync.module.js';
@@ -42,7 +42,10 @@ import { SyncModule } from './sync/sync.module.js';
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     // Opens the request scope (correlation id + user-context storage)
-    // around every route.
-    consumer.apply(RequestContextMiddleware).forRoutes('{*splat}');
+    // around every route; the access log runs INSIDE that scope, in order,
+    // so each line can carry the correlation id (2026-10-10 founder
+    // debugging: arrival/latency/outcome proof for every request — the
+    // counterpart of the app's [kal:api] transport logs).
+    consumer.apply(RequestContextMiddleware, RequestLoggingMiddleware).forRoutes('{*splat}');
   }
 }
