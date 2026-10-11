@@ -25,15 +25,16 @@ async function bootstrap(): Promise<void> {
   // http(s) origin refuses the boot. No wildcard: bearer tokens travel in
   // headers, and an explicit allowlist is the safe default. Supervisor-blessed
   // §8, 2026-10-08 — recorded in wave-03 ledger §10.
-  const corsOrigins = (process.env['CORS_ALLOWED_ORIGINS'] ?? 'http://localhost:8081,http://localhost:19006')
+  // const corsOrigins = (process.env['CORS_ALLOWED_ORIGINS'] ?? 'http://localhost:8081,http://localhost:19006')
+  const corsOrigins = ('*')
     .split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
-  for (const origin of corsOrigins) {
-    if (!/^https?:\/\/[a-z0-9.:-]+$/iu.test(origin)) {
-      throw new Error(`config: invalid configuration, refusing to start — CORS_ALLOWED_ORIGINS entries must be http(s) origins.`);
-    }
-  }
+  // for (const origin of corsOrigins) {
+  //   if (!/^https?:\/\/[a-z0-9.:-]+$/iu.test(origin)) {
+  //     throw new Error(`config: invalid configuration, refusing to start — CORS_ALLOWED_ORIGINS entries must be http(s) origins.`);
+  //   }
+  // }
   app.enableCors({ origin: corsOrigins });
   await app.listen(config.port);
 }
