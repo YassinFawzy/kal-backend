@@ -23,14 +23,14 @@
  *
  * The read is per-authenticated-user by construction (I1/I2/I6): the query
  * binds `userId` explicitly and runs under the journal's per-transaction
- * posture (`../user-scope-tx.ts`). Deleted sessions and superseded entries
+ * posture (`../journal-tx.ts`). Deleted sessions and superseded entries
  * never contribute (tombstone posture). Launch-scale note: DISTINCT ON
  * keeps this one indexed scan over the caller's own rows — no caching layer
  * (ARCHITECTURE §22 posture).
  */
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../db/prisma.service.js';
-import { inUserScopeTx } from '../user-scope-tx.js';
+import { inUserScopeTx } from '../journal-tx.js';
 
 export interface RecentExerciseInput {
   readonly exerciseId: string;

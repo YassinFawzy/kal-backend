@@ -11,14 +11,14 @@
  *
  * The read is per-authenticated-user by construction (I1/I2/I6): every
  * query binds `userId` explicitly and runs under the journal's shared
- * per-transaction posture (`../user-scope-tx.ts` — `SET LOCAL ROLE kal_app`
+ * per-transaction posture (`../journal-tx.ts` — `SET LOCAL ROLE kal_app`
  * + `app.user_id` + `TimeZone UTC`). A foreign or absent id is
  * indistinguishable from "no such template" (I7): the outcome is `undefined`
  * either way, never an existence oracle.
  */
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../db/prisma.service.js';
-import { inUserScopeTx } from '../user-scope-tx.js';
+import { inUserScopeTx } from '../journal-tx.js';
 import { routineToProjection, type RoutineProjection } from './routine-payload.js';
 
 @Injectable()

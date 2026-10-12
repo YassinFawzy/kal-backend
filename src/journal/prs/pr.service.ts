@@ -28,7 +28,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client.ts';
 import { KalProblemException } from '../../problems/kal-problem.exception.js';
 import { PrismaService } from '../../db/prisma.service.js';
-import { inUserScopeTx } from '../user-scope-tx.js';
+import { inUserScopeTx } from '../journal-tx.js';
 import { isUuid } from '../routines/routine-payload.js';
 import { derivePr, type PrCandidateRow } from './pr-math.js';
 
