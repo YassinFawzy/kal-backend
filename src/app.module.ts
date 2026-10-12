@@ -6,6 +6,7 @@ import { DbModule } from './db/db.module.js';
 import { HealthModule } from './health/health.module.js';
 import { IdentityModule } from './identity/identity.module.js';
 import { JournalModule } from './journal/journal.module.js';
+import { JournalRoutinesPrsModule } from './journal/routines-prs.module.js';
 import { ProblemsModule } from './problems/problems.module.js';
 import { RequestContextMiddleware, RequestLoggingMiddleware } from './request-context/index.js';
 import { SchedulerModule } from './scheduler/scheduler.module.js';
@@ -41,6 +42,11 @@ import { SyncModule } from './sync/sync.module.js';
     JournalModule,
     // w03-s2d (additive): the sync ingestion write path (POST /sync/ops).
     SyncModule,
+    // w04-s2c (PRE-UNION lane wiring): the routines/PRs/recents surfaces +
+    // the journal_routine seam implementations. FOLDED into the journal
+    // module at this lane's registration-union rebase (the wave-03 s2e
+    // precedent) — this import swaps to JournalModule there.
+    JournalRoutinesPrsModule,
   ],
   controllers: [],
   providers: [],
