@@ -32,8 +32,14 @@ export type RejectionCode =
   | 'rejected_conflict'
   | 'rejected_deleted';
 
-/** The entity-kind registry (contract §1.1 — frozen, exhaustive for W3). */
-export type SyncOpKind = 'diary_entry' | 'user_food' | 'favorite';
+/**
+ * The entity-kind registry (w3 contract §1.1, additively extended by the w4
+ * contract §1 — docs/api/wave-04-contract.md): `journal_session` joins in
+ * wave 04 (lane w04-s2a, supervisor-blessed seam widening, ruling 1);
+ * `journal_routine` joins with w04-s2c's registration union. The per-op
+ * semantics (§1.3 state machine, LWW, tombstones) are inherited verbatim.
+ */
+export type SyncOpKind = 'diary_entry' | 'user_food' | 'favorite' | 'journal_session';
 
 export type SyncOpAction = 'create' | 'update' | 'delete';
 

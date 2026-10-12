@@ -32,8 +32,10 @@
  *    valid); carried on the envelope as the exact client-authored STRING —
  *    handlers parse it (timestamptz(6) holds microseconds; JS Dates do not).
  *  - `localDate`: calendar-valid `YYYY-MM-DD`, REQUIRED on `diary_entry`
- *    ops, ABSENT on all others. Shape only — the server NEVER re-derives a
- *    diary day from receive/sync time (§1.8 day-boundary freeze).
+ *    AND `journal_session` ops (w4 contract §1.1 — the client-local session
+ *    date), ABSENT on all others. Shape only — the server NEVER re-derives
+ *    a diary day or session day from receive/sync time (§1.8 day-boundary
+ *    freeze, inherited by w4).
  *  - `payload`: full entity snapshot object for create/update (same shape
  *    both — no patch semantics); ABSENT for delete. Per-kind payload field
  *    requirements are the handlers' frozen validation (supervisor ruling
@@ -51,8 +53,11 @@ import type {
   SyncOpKind,
 } from '../../tracking/sync-seams.js';
 
-const ENTITY_KINDS: readonly SyncOpKind[] = ['diary_entry', 'user_food', 'favorite'];
+const ENTITY_KINDS: readonly SyncOpKind[] = ['diary_entry', 'user_food', 'favorite', 'journal_session'];
 const ENTITY_ACTIONS: readonly SyncOpAction[] = ['create', 'update', 'delete'];
+
+/** Kinds whose ops CARRY the client-local date (w3 §1.1 + w4 §1.1; journal_routine joins the absent set with s2c's union). */
+const LOCAL_DATE_REQUIRED_KINDS: readonly SyncOpKind[] = ['diary_entry', 'journal_session'];
 
 const LOCAL_DATE_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
 /**
@@ -193,13 +198,14 @@ function parseOp(value: unknown): SyncOpEnvelope | string {
     return 'clientUpdatedAt';
   }
 
-  // Field parity (§1.1): localDate REQUIRED on diary_entry ops, ABSENT on
-  // all others; payload REQUIRED on create/update, ABSENT on delete.
+  // Field parity (§1.1): localDate REQUIRED on diary_entry and journal_session
+  // ops (w4 contract §1.1 — supervisor-blessed seam widening, ruling 1), ABSENT
+  // on all others; payload REQUIRED on create/update, ABSENT on delete.
   const rawLocalDate = record['localDate'];
   let localDate: string | undefined;
   if (rawLocalDate !== undefined && rawLocalDate !== null) {
     if (
-      kind !== 'diary_entry' ||
+      !LOCAL_DATE_REQUIRED_KINDS.includes(kind) ||
       typeof rawLocalDate !== 'string' ||
       !LOCAL_DATE_PATTERN.test(rawLocalDate) ||
       !isCalendarValidLocalDate(rawLocalDate)
@@ -207,7 +213,7 @@ function parseOp(value: unknown): SyncOpEnvelope | string {
       return 'localDate';
     }
     localDate = rawLocalDate;
-  } else if (kind === 'diary_entry') {
+  } else if (LOCAL_DATE_REQUIRED_KINDS.includes(kind)) {
     return 'localDate';
   }
 
@@ -222,11 +228,12 @@ function parseOp(value: unknown): SyncOpEnvelope | string {
     return 'payload';
   }
 
-  // Canonical diary shape: envelope↔payload localDate PARITY (supervisor
-  // ruling 2026-10-08 — a DISAGREEMENT is a whole-batch shape error; the
-  // payload-localDate ABSENCE is the real diary handler's frozen payload
-  // validation, per-op at dispatch).
-  if (kind === 'diary_entry' && payload !== undefined && payload['localDate'] !== undefined) {
+  // Canonical diary AND journal-session shape: envelope↔payload localDate
+  // PARITY (supervisor ruling 2026-10-08, extended to the w4 day-carrying
+  // kind by supervisor ruling 1, 2026-10-12) — a DISAGREEMENT is a
+  // whole-batch shape error; payload-localDate ABSENCE stays the owning
+  // handler's frozen payload validation, per-op at dispatch.
+  if (LOCAL_DATE_REQUIRED_KINDS.includes(kind) && payload !== undefined && payload['localDate'] !== undefined) {
     if (payload['localDate'] !== localDate) {
       return 'localDate';
     }
