@@ -20,7 +20,7 @@
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../generated/prisma/client.ts";
-import { applyFoodCatalogSeed } from "./seed-apply.ts";
+import { applyExerciseCatalogSeed, applyFoodCatalogSeed } from "./seed-apply.ts";
 
 /** Fixture user A — synthetic UUID reserved for fixtures, not a real account. */
 const FIXTURE_USER_A = "00000000-0000-4000-8000-0000000000a1";
@@ -119,8 +119,12 @@ async function main(): Promise<void> {
   // integration suite drives for its idempotence/fidelity proofs).
   const catalog = await applyFoodCatalogSeed(prisma);
 
+  // Wave 4 — exercise catalog (w4 contract note §8; engineering-initial
+  // pending founder review, ledger §7-C), same idempotent upsert pattern.
+  const exercises = await applyExerciseCatalogSeed(prisma);
+
   console.log(
-    `seed: fixtures in place (weight_log=${weights}, audit_events=${audits}, foods=${catalog.foods}, serving_variants=${catalog.servingVariants})`,
+    `seed: fixtures in place (weight_log=${weights}, audit_events=${audits}, foods=${catalog.foods}, serving_variants=${catalog.servingVariants}, exercises=${exercises.exercises})`,
   );
 }
 

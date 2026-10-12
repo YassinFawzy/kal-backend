@@ -62,6 +62,16 @@ Schema (migration `20261007222419_w3_tracking_sync_core` + carryovers `202610072
 - **Diary REST mutations do not exist** — diary/user-food/favorite mutations flow exclusively through sync ingestion (`POST /sync/ops`); the frozen per-op outcomes, LWW tiebreak `(clientUpdatedAt, opId)`, tombstones with no same-id resurrection, and user-bound opaque delta cursors are all specified in the contract note §1.
 - The curated Egyptian core pack seeds from `prisma/seed-manifest.ts` (48 items, `node prisma/seed.ts`) — values are **engineering-initial pending founder nutrition review** (ledger §7-E2).
 
+### W4 surface (journal wave — contract: `docs/api/wave-04-contract.md`)
+
+Schema (migration `20261012000000_w4_journal_core`):
+
+- **Platform exercise catalog** (RLS declined): `exercises` — bilingual names + text instructions AR/EN (HD-26 license-free text posture: NO media fields), stored normalized names/aliases (the W3 §7 pipeline, reused), minimal display-only taxonomy (`muscle_groups`/`tags`), provenance fixed `kal_reviewed`. Seeds from `prisma/seed-exercises.ts` (50 items, `node prisma/seed.ts`) — **engineering-initial pending founder review** (ledger §7-C).
+- **Consumer journal health tables** (fail-closed RLS ADOPTED — `app.user_id` policy per the pilot): `journal_sessions` + `journal_session_exercises` + `journal_exercise_sets` (compound user references on both child levels, I3; server-derived name snapshots frozen at log time; client-local `local_date` — the server never re-derives the day), `journal_routines` + `journal_routine_exercises` + `journal_routine_sets` (templates of the same exercise-entry shape), and `journal_training_days` (the derived-never-synced `(user_id, local_date)` projection maintained on session apply).
+- **Counter table** (RLS declined, documented): `journal_session_create_counters` — the session-create rate guard on the sync-apply path (`JOURNAL_SESSION_CREATE_MAX_PER_HOUR/_DAY`, engineering-initial **DEFAULT PENDING APPROVAL**, ledger §7-B; one limiter, one enforcement point — journal has NO REST mutation surface).
+- **Journal REST mutations do not exist** — sessions/routines flow exclusively through sync ingestion as the `journal_session` and `journal_routine` kinds (the `w4` migration widens the `sync_operations` kind registry additively). REST is reads only: exercise search/detail, session day/detail reads, and the per-exercise PR read (Epley `1RM = weight × (1 + reps/30)` over weighted sets, derived server-side — no PR table).
+- This repository serves the `w4` fixture document additively (`GET /contracts/w4` — every `w1`/`w2`/`w3` entry retained byte-stably; all pinned by golden hashes).
+
 ## Checks
 
 ```bash
@@ -163,6 +173,17 @@ Wave 1 establishes the structural-isolation pattern every later wave copies:
   | `recovery_request_counters` | **Decline (outside scope)** | Digest-keyed throttle state, no `user_id` — the `auth_attempt_counters` posture (F-S4-1 carryover). |
 
   **Platform-scope bypass: none added in W3** (no cross-account job exists) — `kal_platform` carries NO grants on adopted tables this wave; the W1 `weight_log` exemptions remain the standing pattern. On declined tables, platform holds only the enumerated shapes (catalog SELECT; cache + recovery-counter SELECT/DELETE housekeeping).
+- **W4 journal tables — per-table decisions (w4 contract note §5).** Structure pinned by `test/integration/journal-rls.itspec.ts` (54 cases: fail-closed, WITH CHECK, I3 compound-FK, grants matrix, kind-registry, set-format bounds, Prisma-client round-trip):
+
+  | Table | Decision | Rationale (ADR-0002-consistent) |
+  |---|---|---|
+  | `exercises` | **Decline** | Platform catalog (names + text instructions, HD-26 — no media), not user-scoped; every authenticated consumer reads the same governed rows. SELECT-only for `kal_app` and `kal_platform`. |
+  | `journal_sessions` + `journal_session_exercises` + `journal_exercise_sets` | **Adopt** | Consumer-owned health data (workout history); compound user references `(parent_id, user_id)` (I3) on both child levels — a cross-account exercise entry or set is structurally impossible. No DELETE grant (tombstones only). |
+  | `journal_routines` + `journal_routine_exercises` + `journal_routine_sets` | **Adopt** | Same posture — routines are journal health data (templates of the user's training). |
+  | `journal_training_days` | **Adopt** | Health-DERIVED projection (training-day flags are behavioral health data — a leak is as sensitive as the sessions it projects). The ONE documented DELETE grant on an owned table: rows are an INSERT-only projection removed when the day's last active session disappears — a derived cache, not history; no tombstone semantics to preserve, and the projection must stay exact (∃ active session ⇔ row). RLS still scopes every DELETE to the caller's own rows. |
+  | `journal_session_create_counters` | **Decline (outside scope)** | Platform abuse-control state — the `user_food_create_counters` posture (§11 places rate-limit counters on the platform plane). |
+
+  **Platform-scope bypass: none added in W4** (no cross-account job exists) — `kal_platform` carries NO grants on adopted journal tables. The `w4` migration also widens the `sync_operations` entity-kind registry (`journal_session`, `journal_routine`) and its local-date parity rule (session ops carry the client-local date; routine ops must not) — constraints replaced, never edited in place. PRs/1RM are DERIVED on read (no table — see the w4 contract note §1).
 - **Compound user-reference pattern for later waves (I3):** owned child tables carry the per-plane user id column and expose a composite key so cross-user references are structurally impossible:
 
   ```sql

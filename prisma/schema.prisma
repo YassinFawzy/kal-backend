@@ -157,16 +157,20 @@ model User {
   /// immutable (I1).
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  sessions              Session[]
-  recoveryTickets       RecoveryTicket[]
-  weightLogs            WeightLog[]
-  userFoods             UserFood[]
-  diaryEntries          DiaryEntry[]
-  diaryDays             DiaryDay[]
-  favorites             Favorite[]
-  syncOperations        SyncOperation[]
-  syncIdempotencyKeys   SyncIdempotencyKey[]
-  userFoodCreateCounter UserFoodCreateCounter?
+  sessions                     Session[]
+  recoveryTickets              RecoveryTicket[]
+  weightLogs                   WeightLog[]
+  userFoods                    UserFood[]
+  diaryEntries                 DiaryEntry[]
+  diaryDays                    DiaryDay[]
+  favorites                    Favorite[]
+  syncOperations               SyncOperation[]
+  syncIdempotencyKeys          SyncIdempotencyKey[]
+  userFoodCreateCounter        UserFoodCreateCounter?
+  journalSessions              JournalSession[]
+  journalRoutines              JournalRoutine[]
+  journalTrainingDays          JournalTrainingDay[]
+  journalSessionCreateCounter  JournalSessionCreateCounter?
 
   @@map("users")
 }
@@ -727,8 +731,9 @@ model SyncOperation {
   /// (≤ 128 chars, CHECK-pinned). Ordering metadata, never a credential.
   deviceId String @map("device_id") @db.Text
 
-  /// Entity-kind registry (frozen, note §1): diary_entry | user_food |
-  /// favorite. CHECK-pinned.
+  /// Entity-kind registry (frozen; w3 note §1, additively extended by the
+  /// w4 note §1): diary_entry | user_food | favorite | journal_session |
+  /// journal_routine. CHECK-pinned (the w4 migration widens the constraint).
   entityKind String @map("entity_kind") @db.Text
 
   /// create | update | delete (CHECK-pinned).
@@ -737,8 +742,9 @@ model SyncOperation {
   /// The target entity's client-generated id.
   entityId String @map("entity_id") @db.Uuid
 
-  /// Client-local diary date — REQUIRED on diary_entry ops, ABSENT otherwise
-  /// (CHECK-pinned). The day-boundary rule rides here (note §1).
+  /// Client-local date — REQUIRED on diary_entry (w3 note §1) and
+  /// journal_session (w4 note §1) ops, ABSENT on all others (CHECK-pinned).
+  /// The day-boundary rule rides here: the server NEVER re-derives the day.
   localDate DateTime? @map("local_date") @db.Date
 
   /// Client-authored LWW timestamp (ISO 8601 UTC instants only).
@@ -809,12 +815,364 @@ model SyncIdempotencyKey {
 }
 
 // ---------------------------------------------------------------------------
+// Journal (Wave 4 — lane w04-s1-schema; contract:
+// docs/api/wave-04-contract.md). Platform exercise catalog (RLS DECLINED —
+// not user-scoped, same posture as foods) + consumer-owned journal health
+// tables (sessions + children, routines + children, training-day marks —
+// ALL ADOPT the fail-closed `app.user_id` GUC policy per the weight_log
+// pilot). Per-table decisions are documented, never implied (ADR-0002;
+// contract note §5). Journal mutations exist ONLY as sync operations —
+// there is no journal REST mutation surface by design (note §1); REST is
+// reads only (catalog search/detail, session reads, PR reads).
+// PRs/1RM are DERIVED on read (no table — note §1: derived, never
+// hand-edited); training-day marks are a derived projection keyed
+// (user_id, local_date) — derived-never-synced (never in the delta feed).
+// ---------------------------------------------------------------------------
+
+/// One catalog exercise (PRD §21 "Exercise", FR-023). Platform-owned — RLS
+/// DECLINED (not user-scoped; every authenticated consumer reads the same
+/// governed rows). Text-first license-free posture (HD-26): names + text
+/// instructions AR/EN, NO media fields anywhere. Search parity reuses the
+/// frozen wave-03 normalization rule set (w4 note §7 — reuse, not
+/// re-specified): stored `*_normalized` forms are written by the seed/hand
+/// per that pipeline; the database never re-derives them.
+model Exercise {
+  /// Fixed synthetic UUID for seeded rows (reserved fixture range `…f2nn`)
+  /// so the seed upserts and both repositories reference identical ids.
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Bilingual display names (FR-023 — both REQUIRED for exercises).
+  nameEn           String @map("name_en") @db.Text
+  nameAr           String @map("name_ar") @db.Text
+  nameEnNormalized String @map("name_en_normalized") @db.Text
+  nameArNormalized String @map("name_ar_normalized") @db.Text
+
+  /// Dialect/transliteration aliases (normalized matching, wave-03 §7
+  /// matching model). Element-wise parity with the normalized array is
+  /// CHECK-pinned.
+  aliases           String[] @map("aliases")
+  aliasesNormalized String[] @map("aliases_normalized")
+
+  /// Text instructions (AR + EN, license-free posture HD-26 — no media).
+  instructionsEn String @map("instructions_en") @db.Text
+  instructionsAr String @map("instructions_ar") @db.Text
+
+  /// Minimal display-only taxonomy (w4 note §8): coarse muscle groups +
+  /// free tags. Never used for access control or computation — display and
+  /// filter affordances only.
+  muscleGroups String[] @map("muscle_groups")
+  tags         String[]
+
+  /// Authoring provenance — fixed `kal_reviewed` (CHECK-pinned; the in-house
+  /// review posture per the W3 foods precedent). Content is
+  /// ENGINEERING-INITIAL pending founder review (ledger §7-C).
+  provenance String @map("provenance") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  sessionExercises JournalSessionExercise[]
+  routineExercises JournalRoutineExercise[]
+
+  @@map("exercises")
+}
+
+/// One logged workout session (PRD §21 "workout session", FR-022). Created
+/// exclusively by sync ingestion — the `id` is the client-generated entity
+/// id (offline creation; dedupe only, never authorization — I6). The
+/// client-local session date (`local_date`) is carried in the op and is
+/// authoritative — the server NEVER re-derives the day (day-boundary rule
+/// §1.8 inherited verbatim). Consumer-owned health table — RLS ADOPTED.
+model JournalSession {
+  /// Client-generated entity id (UUID) — the sync op's entityId.
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Immutable owning-consumer id (I1); compound-FK target for the child
+  /// rows via @@unique([id, userId]) (I3).
+  userId String @map("user_id") @db.Uuid
+
+  /// Client-local session date (YYYY-MM-DD semantics via DATE column).
+  /// The authoritative day — never derived server-side. Training-day marks
+  /// key on exactly this value (derived-never-synced).
+  localDate DateTime @map("local_date") @db.Date
+
+  /// Optional user-authored session title (≤ 120 chars, CHECK-pinned).
+  title String? @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// Client-authored LWW timestamp (winning op's clientUpdatedAt) — NOT
+  /// server clock (contract §1.4 inherited verbatim).
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  /// Tombstone (soft delete). Set by delete ops; never cleared —
+  /// a fresh entity id after a delete is a NEW session (no resurrection).
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  /// Winning op id — the LWW deterministic tiebreak comparator.
+  lastOpId String? @map("last_op_id") @db.Uuid
+
+  user      User                     @relation(fields: [userId], references: [id])
+  exercises JournalSessionExercise[]
+
+  @@unique([id, userId])
+  @@index([userId, localDate])
+  @@index([userId, updatedAt])
+  @@map("journal_sessions")
+}
+
+/// One exercise entry inside a session (ordered; the same exercise-entry
+/// shape routines template). The display-name snapshot is frozen at log
+/// time — DERIVED SERVER-SIDE from the catalog row at apply time (w4 note
+/// §1): later catalog edits never rewrite logged history (I11-analog), and
+/// the client never authors display data. Consumer-owned health child —
+/// RLS ADOPTED; the compound user reference (I3) makes cross-account
+/// children structurally impossible.
+model JournalSessionExercise {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  sessionId String @map("session_id") @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+
+  /// The referenced catalog exercise (platform-owned; ON DELETE RESTRICT —
+  /// catalog deletion is an explicit job that resolves children itself).
+  exerciseId String @map("exercise_id") @db.Uuid
+
+  /// Frozen-at-log-time display names (AR + EN snapshot of the catalog row
+  /// at apply time). EN required; AR mirrors the catalog row (which requires
+  /// AR, so in practice both are always present — the nullability matches
+  /// the snapshot posture, not the catalog CHECK).
+  nameSnapshotEn String @map("name_snapshot_en") @db.Text
+  nameSnapshotAr String? @map("name_snapshot_ar") @db.Text
+
+  /// Ordering within the session (non-negative; ties broken by id — a
+  /// deterministic total order, CHECK-pinned ≥ 0).
+  position Int
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// Soft-deleted when an update op replaces the child set (the W3
+  /// serving-set replacement pattern).
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  /// Compound user reference (I3) — never crosses accounts, structurally.
+  session JournalSession        @relation(fields: [sessionId, userId], references: [id, userId])
+  exercise Exercise              @relation(fields: [exerciseId], references: [id], onDelete: Restrict)
+  sets     JournalExerciseSet[]
+
+  @@unique([id, userId])
+  @@index([sessionId])
+  @@map("journal_session_exercises")
+}
+
+/// One logged set inside a session exercise entry. DISCRIMINATED format
+/// (w4 note §1): `weighted` (weight kg + reps), `timed` (duration), or
+/// `notes` (free text — WOD/AMRAP-style). Mixed formats coexist in one
+/// session; the format XOR is CHECK-pinned in the migration. Consumer-owned
+/// health child — RLS ADOPTED; compound user reference (I3).
+model JournalExerciseSet {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  sessionExerciseId String @map("session_exercise_id") @db.Uuid
+  userId            String @map("user_id") @db.Uuid
+
+  /// Ordering within the exercise entry (non-negative, CHECK-pinned).
+  position Int
+
+  /// weighted | timed | notes (CHECK-pinned; per-format field parity).
+  format String @db.Text
+
+  /// weighted sets only (kg > 0, ≤ 1000 — CHECK-pinned). PR/1RM derivation
+  /// consumes exactly these (Epley over (weightKg, reps); timed/notes sets
+  /// never contribute — w4 note §1).
+  weightKg        Decimal? @map("weight_kg") @db.Decimal(9, 3)
+  reps            Int?
+  /// timed sets only (1..86400 seconds — CHECK-pinned).
+  durationSeconds Int?     @map("duration_seconds")
+  /// notes sets only (1..500 chars — CHECK-pinned).
+  notesText       String?  @map("notes_text") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// Soft-deleted when an update op replaces the child set.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  /// Compound user reference (I3) — never crosses accounts, structurally.
+  sessionExercise JournalSessionExercise @relation(fields: [sessionExerciseId, userId], references: [id, userId])
+
+  @@unique([id, userId])
+  @@index([sessionExerciseId])
+  @@map("journal_exercise_sets")
+}
+
+/// One reusable routine template (PRD §21, FR-024) — a named template of
+/// the SAME exercise-entry shape sessions carry. Created/edited exclusively
+/// via sync ops (`journal_routine` kind; no `local_date` — a template has
+/// no day). Consumer-owned health table — RLS ADOPTED.
+model JournalRoutine {
+  /// Client-generated entity id (UUID) — the sync op's entityId.
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  /// Immutable owning-consumer id (I1); compound-FK target (I3).
+  userId String @map("user_id") @db.Uuid
+
+  /// User-authored routine name (1..120 chars, CHECK-pinned; REQUIRED —
+  /// unlike the session title).
+  name String @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// Client-authored LWW timestamp (winning op's clientUpdatedAt).
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  /// Tombstone (soft delete; never cleared — no resurrection).
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  /// Winning op id — the LWW deterministic tiebreak comparator.
+  lastOpId String? @map("last_op_id") @db.Uuid
+
+  user      User                     @relation(fields: [userId], references: [id])
+  exercises JournalRoutineExercise[]
+
+  @@unique([id, userId])
+  @@index([userId, updatedAt])
+  @@map("journal_routines")
+}
+
+/// One exercise entry inside a routine template (the same shape as a
+/// session's exercise entries; template sets are plans the log-workout
+/// editor prefills). Consumer-owned health child — RLS ADOPTED; compound
+/// user reference (I3).
+model JournalRoutineExercise {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  routineId String @map("routine_id") @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+
+  /// The referenced catalog exercise (ON DELETE RESTRICT).
+  exerciseId String @map("exercise_id") @db.Uuid
+
+  /// Frozen-at-template-time display names (server-derived at apply time —
+  /// same rule as session entries).
+  nameSnapshotEn String @map("name_snapshot_en") @db.Text
+  nameSnapshotAr String? @map("name_snapshot_ar") @db.Text
+
+  /// Ordering within the routine (non-negative, CHECK-pinned).
+  position Int
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// Soft-deleted when an update op replaces the child set.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  /// Compound user reference (I3) — never crosses accounts, structurally.
+  routine  JournalRoutine        @relation(fields: [routineId, userId], references: [id, userId])
+  exercise Exercise              @relation(fields: [exerciseId], references: [id], onDelete: Restrict)
+  sets     JournalRoutineSet[]
+
+  @@unique([id, userId])
+  @@index([routineId])
+  @@map("journal_routine_exercises")
+}
+
+/// One template set inside a routine exercise entry — the same discriminated
+/// format as session sets (all three formats allowed; templates may carry
+/// WOD-style notes). Consumer-owned health child — RLS ADOPTED; compound
+/// user reference (I3).
+model JournalRoutineSet {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  routineExerciseId String @map("routine_exercise_id") @db.Uuid
+  userId            String @map("user_id") @db.Uuid
+
+  /// Ordering within the exercise entry (non-negative, CHECK-pinned).
+  position Int
+
+  /// weighted | timed | notes (CHECK-pinned; per-format field parity).
+  format String @db.Text
+
+  weightKg        Decimal? @map("weight_kg") @db.Decimal(9, 3)
+  reps            Int?
+  durationSeconds Int?     @map("duration_seconds")
+  notesText       String?  @map("notes_text") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// Soft-deleted when an update op replaces the child set.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  /// Compound user reference (I3) — never crosses accounts, structurally.
+  routineExercise JournalRoutineExercise @relation(fields: [routineExerciseId, userId], references: [id, userId])
+
+  @@unique([id, userId])
+  @@index([routineExerciseId])
+  @@map("journal_routine_sets")
+}
+
+/// One derived training-day mark (PRD §21 "Training-day marking", FR-025).
+/// DERIVED-NEVER-SYNCED: written exclusively by the journal apply handlers
+/// on session apply — keyed (user_id, local_date), idempotent, a pure
+/// projection of ∃ active (non-deleted) session for that client-local day.
+/// Never in the delta feed, never client-written; W5 consumes the flag only
+/// through the journal module's exported service (module gates hold — no
+/// table reads across modules). Consumer-owned health-derived table — RLS
+/// ADOPTED. Rows are INSERT-only projections removed when the day's last
+/// active session disappears (DELETE grant — documented deviation from the
+/// owned-tables no-DELETE posture: a derived cache, not history).
+model JournalTrainingDay {
+  /// Immutable owning-consumer id (I1) — composite PK part.
+  userId String @map("user_id") @db.Uuid
+
+  /// The client-local session date (composite PK part; the day-boundary
+  /// rule rides on the session's carried date — never derived server-side).
+  localDate DateTime @map("local_date") @db.Date
+
+  /// Server apply time of the marking write (bookkeeping only — the flag
+  /// itself is the row's existence).
+  markedAt DateTime @default(now()) @map("marked_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@id([userId, localDate])
+  @@map("journal_training_days")
+}
+
+/// Per-account session-create volume (the w4 rate-guard substrate —
+/// `JOURNAL_SESSION_CREATE_MAX_PER_HOUR/_DAY`, engineering-initial DEFAULT
+/// PENDING APPROVAL, ledger §7-B). Platform-owned abuse-control state
+/// (ARCHITECTURE §11 places rate-limit counters on the platform plane) —
+/// RLS DECLINED (same posture as user_food_create_counters: not user-owned
+/// data; only the owning account's context can ever touch its row).
+/// ONE enforcement point: the sync-apply path inside the journal session
+/// handler (journal has NO REST mutation surface — w4 note §6).
+model JournalSessionCreateCounter {
+  /// The counted account (the limiter only ever runs for an authenticated
+  /// context).
+  userId String @id @map("user_id") @db.Uuid
+
+  /// Rolling hour window (start of the window = first tick in it) + count.
+  hourWindowStart DateTime @map("hour_window_start") @db.Timestamptz(6)
+  hourCount       Int      @default(0) @map("hour_count") @db.Integer
+
+  /// Rolling 24 h window + count.
+  dayWindowStart DateTime @map("day_window_start") @db.Timestamptz(6)
+  dayCount       Int      @default(0) @map("day_count") @db.Integer
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("journal_session_create_counters")
+}
+
+// ---------------------------------------------------------------------------
 // Phase 1 domain sections — RESERVED (tables land with their wave; do not
 // build early). Order follows ARCHITECTURE §9 module map / PLAN.md §4.
 // ---------------------------------------------------------------------------
 
 // consent    (W5)  — per-purpose consent records with grant/withdrawal history
-// journal    (W4)  — exercise catalog, workout sessions, routines, PRs
 // goals      (W5)  — goal setup, versioned target profiles/snapshots,
 //                    trend/streak inputs (weight_log above is its health table;
 //                    its retroactive user_id FK lands with this wave — W3

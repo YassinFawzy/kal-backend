@@ -38,6 +38,12 @@ const EXPECTED_MIGRATIONS = [
   '20261007222543_weight_log_user_fk',
   // W3 Stage-1 carryover (c): F-S4-1 recovery-request throttle counter table.
   '20261007222622_recovery_request_throttle',
+  // W4 journal core (lane w04-s1-schema): exercise catalog + journal
+  // sessions/routines (+ children) + training-day marks + session-create
+  // counter, governance (RLS adopt×7/decline×2, grants, CHECKs) and the
+  // sync_operations kind-registry widening — appended additively by the
+  // owning schema lane (contract: docs/api/wave-04-contract.md §5).
+  '20261012000000_w4_journal_core',
 ] as const;
 
 let db: EphemeralKalDb;
