@@ -28,23 +28,18 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '../../../generated/prisma/client.ts';
 import { routineToProjection } from './routine-payload.js';
-import type {
-  RoutineDeltaChange,
-  RoutineDeltaCursorState,
-  RoutineDeltaProvider,
-  RoutineOpContext,
-} from './routine-seams.js';
+import type { DeltaChange, DeltaCursorState, SyncOpContext, TrackingDeltaProvider } from '../../tracking/sync-seams.js';
 
 @Injectable()
-export class RoutineDeltaProviderService implements RoutineDeltaProvider {
+export class RoutineDeltaProviderService implements TrackingDeltaProvider {
   readonly kind = 'journal_routine' as const;
 
   async changesSince(
-    cursor: RoutineDeltaCursorState | null,
+    cursor: DeltaCursorState | null,
     limit: number,
-    ctx: RoutineOpContext,
+    ctx: SyncOpContext,
     tx: Prisma.TransactionClient,
-  ): Promise<{ changes: RoutineDeltaChange[]; exhausted: boolean }> {
+  ): Promise<{ changes: DeltaChange[]; exhausted: boolean }> {
     const take = Math.floor(limit);
     if (!Number.isFinite(take) || take < 1) {
       throw new RangeError('routine delta: limit must be a positive integer (sync owns clamping — seam violation)');
@@ -97,7 +92,7 @@ export class RoutineDeltaProviderService implements RoutineDeltaProvider {
       },
     });
     const rowById = new Map(rows.map((row) => [row.id, row]));
-    const changes = page.flatMap((pageRow): RoutineDeltaChange[] => {
+    const changes = page.flatMap((pageRow): DeltaChange[] => {
       const row = rowById.get(pageRow.id);
       if (row === undefined) {
         return []; // unobservable: page ids come from the same scoped table

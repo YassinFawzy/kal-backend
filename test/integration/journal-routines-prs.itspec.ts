@@ -60,11 +60,11 @@ import { RoutineDeltaProviderService } from '../../src/journal/routines/routine-
 import { RoutineOpHandler } from '../../src/journal/routines/routine-apply.handler.js';
 import { RoutineReadService } from '../../src/journal/routines/routine-read.service.js';
 import type {
-  RoutineDeltaChange,
-  RoutineDeltaCursorState,
-  RoutineOpEnvelope,
-  RoutineOpHandlerResult,
-} from '../../src/journal/routines/routine-seams.js';
+  DeltaChange,
+  DeltaCursorState,
+  SyncOpEnvelope,
+  SyncOpHandlerResult,
+} from '../../src/tracking/sync-seams.js';
 import type { ProjectedRoutineExercise, RoutineProjection } from '../../src/journal/routines/routine-payload.js';
 import { createEphemeralKalDb, type EphemeralKalDb } from './helpers/ephemeral-db.js';
 import { asUser } from './helpers/acting-user.js';
@@ -108,7 +108,7 @@ function routinePayload(overrides: Record<string, unknown> = {}): Record<string,
   };
 }
 
-function routineOp(overrides: Record<string, unknown> = {}, payloadOverrides: Record<string, unknown> = {}): RoutineOpEnvelope {
+function routineOp(overrides: Record<string, unknown> = {}, payloadOverrides: Record<string, unknown> = {}): SyncOpEnvelope {
   return {
     opId: opId(),
     kind: 'journal_routine',
@@ -117,12 +117,12 @@ function routineOp(overrides: Record<string, unknown> = {}, payloadOverrides: Re
     clientUpdatedAt: T0,
     payload: routinePayload(payloadOverrides),
     ...overrides,
-  } as RoutineOpEnvelope;
+  } as SyncOpEnvelope;
 }
 
 /** Deletes carry NO payload (envelope parity §1.1/§1.2 — the handler re-checks defensively). */
-function deleteOp(entityId: string, clientUpdatedAt: string): RoutineOpEnvelope {
-  return { opId: opId(), kind: 'journal_routine', action: 'delete', entityId, clientUpdatedAt } as RoutineOpEnvelope;
+function deleteOp(entityId: string, clientUpdatedAt: string): SyncOpEnvelope {
+  return { opId: opId(), kind: 'journal_routine', action: 'delete', entityId, clientUpdatedAt } as SyncOpEnvelope;
 }
 
 /**
@@ -132,7 +132,7 @@ function deleteOp(entityId: string, clientUpdatedAt: string): RoutineOpEnvelope 
  * validation, dedupe on (user, op id), ack assembly) are sync's and are not
  * replicated here.
  */
-async function dispatch(op: RoutineOpEnvelope, userId: string): Promise<RoutineOpHandlerResult> {
+async function dispatch(op: SyncOpEnvelope, userId: string): Promise<SyncOpHandlerResult> {
   return prisma.transaction(async (tx) => {
     await tx.$queryRaw`SELECT set_config('role', 'kal_app', true), set_config('app.user_id', ${userId}::text, true), set_config('TimeZone', 'UTC', true)`;
     try {
@@ -146,7 +146,7 @@ async function dispatch(op: RoutineOpEnvelope, userId: string): Promise<RoutineO
 }
 
 /** A dispatch whose transaction posture is deliberately WRONG for the op context. */
-async function dispatchWithMismatchedPosture(op: RoutineOpEnvelope, opUserId: string, txUserId: string | null): Promise<RoutineOpHandlerResult> {
+async function dispatchWithMismatchedPosture(op: SyncOpEnvelope, opUserId: string, txUserId: string | null): Promise<SyncOpHandlerResult> {
   return prisma.transaction(async (tx) => {
     if (txUserId !== null) {
       await tx.$queryRaw`SELECT set_config('role', 'kal_app', true), set_config('app.user_id', ${txUserId}::text, true), set_config('TimeZone', 'UTC', true)`;
@@ -157,12 +157,12 @@ async function dispatchWithMismatchedPosture(op: RoutineOpEnvelope, opUserId: st
   });
 }
 
-const feedBegin: RoutineDeltaCursorState = {
+const feedBegin: DeltaCursorState = {
   updatedAt: '1970-01-01T00:00:00.000Z',
   entityId: '00000000-0000-4000-8000-000000000000',
 };
 
-function feedSince(userId: string, cursor: RoutineDeltaCursorState | null, limit: number): Promise<{ changes: RoutineDeltaChange[]; exhausted: boolean }> {
+function feedSince(userId: string, cursor: DeltaCursorState | null, limit: number): Promise<{ changes: DeltaChange[]; exhausted: boolean }> {
   return prisma.transaction((tx) => delta.changesSince(cursor, limit, { userId, deviceId: 'itspec-device' }, tx));
 }
 

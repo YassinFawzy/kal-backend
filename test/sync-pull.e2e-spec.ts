@@ -200,9 +200,10 @@ describe('sync.changes.pull — production registration', () => {
     // SyncModule.onModuleInit registered s2c's diary + s2a's foods providers
     // through the sync-owned registry — the production registration path.
     // W4 (additive, supervisor ruling 1): the journal module's
-    // `journal_session` provider joins the same registry; `journal_routine`
-    // joins with s2c's rebase union.
-    expect([...app.get(SyncDeltaRegistry).registeredKinds()].sort()).toEqual(['diary_entry', 'favorite', 'journal_session', 'user_food']);
+    // `journal_session` provider joined the registry at s2a's merge;
+    // `journal_routine` joined with s2c's rebase union (merge order
+    // s2b → s2a → s2c — this tree).
+    expect([...app.get(SyncDeltaRegistry).registeredKinds()].sort()).toEqual(['diary_entry', 'favorite', 'journal_routine', 'journal_session', 'user_food']);
   });
 });
 

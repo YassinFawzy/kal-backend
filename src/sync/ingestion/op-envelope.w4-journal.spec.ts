@@ -13,8 +13,10 @@
  *     (the W3 2026-10-08 envelope-field-parity ruling extended to the w4
  *     day-carrying kind); payload-localDate ABSENCE is NOT a batch error —
  *     it is the journal handler's per-op `rejected_validation` domain;
- *   - `journal_routine` is still an UNKNOWN kind at this layer (w04-s2c's
- *     registration union adds it later — the seam stays clean).
+ *   - `journal_routine` parses at this layer as the SECOND journal kind
+ *     (w04-s2c's registration union — supervisor ruling 1 executed): it is
+ *     a localDate-FORBIDDEN kind (mirrors `user_food`/`favorite` — a
+ *     template has no day), so a carried localDate is a whole-batch error.
  *
  * A batch-shape failure here rejects the WHOLE batch with
  * `400 VALIDATION_FAILED`, zero ops applied, nothing recorded (§1.2) — the
@@ -126,7 +128,7 @@ describe('journal_session layer-1 acceptance (w4 §1.1, ruling 1)', () => {
     expect(parsed.ok).toBe(true);
   });
 
-  it('journal_routine is still an UNKNOWN kind at this layer (s2c adds it in the union)', () => {
+  it('journal_routine parses (the s2c registration union added the kind) — a template has no day', () => {
     const parsed = parseOps(
       sessionOp({
         kind: 'journal_routine',
@@ -134,9 +136,22 @@ describe('journal_session layer-1 acceptance (w4 §1.1, ruling 1)', () => {
         payload: { name: 'Day A', exercises: [] },
       }),
     );
-    expect(parsed.ok).toBe(false);
-    if (!parsed.ok) {
-      expect(parsed.errors.some((e) => e.field === 'ops[0].kind')).toBe(true);
+    expect(parsed.ok).toBe(true);
+  });
+
+  it('localDate on a journal_routine op is the whole-batch error class (localDate-FORBIDDEN — mirrors user_food/favorite)', () => {
+    const carried = parseOps({
+      opId: '7d0f0000-0000-4000-8000-00000000a002',
+      kind: 'journal_routine',
+      entityId: '7e100000-0000-4000-8000-00000000b003',
+      action: 'create',
+      clientUpdatedAt: '2026-10-12T21:59:00.000Z',
+      localDate: '2026-10-12',
+      payload: { name: 'Day A', exercises: [] },
+    });
+    expect(carried.ok).toBe(false);
+    if (!carried.ok) {
+      expect(carried.errors.some((e) => e.field === 'ops[0].localDate')).toBe(true);
     }
   });
 });

@@ -50,13 +50,13 @@
  * additionally binds `userId` explicitly (I1: the GUC is the backstop, not
  * the only layer).
  *
- * SEAM NOTE (pre-union): this class satisfies the canonical `SyncOpHandler`
- * shape with the widened kind; the local structural mirror
- * (`./routine-seams.ts`) swaps to canonical type-level imports at this
- * lane's registration-union rebase (the W3 s2d precedent — supervisor
- * ruling 1, wave-04 ledger).
+ * SEAM NOTE (post-union): this class implements the canonical `SyncOpHandler`
+ * seam (`src/tracking/sync-seams.ts` — the widened w4 union) and is
+ * registered into sync's registry by the journal module + sync.module init
+ * (the w3 §4 mechanics). The pre-union structural mirror this lane filed is
+ * deleted; this swap is the W3 s2d precedent executed.
  */
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import type { Prisma } from '../../../generated/prisma/client.ts';
 import {
   isUuid,
@@ -65,18 +65,26 @@ import {
   type RoutineSnapshot,
 } from './routine-payload.js';
 import { opWinsLww } from './routine-lww.js';
-import type { RoutineOpContext, RoutineOpEnvelope, RoutineOpHandlerResult, RoutineOpHandler as RoutineOpHandlerSeam } from './routine-seams.js';
+import { EXERCISE_CATALOG_RESOLUTION_PORT, type ExerciseCatalogResolutionPort } from '../sessions/exercise-catalog.port.js';
+import type { SyncOpContext, SyncOpEnvelope, SyncOpHandler, SyncOpHandlerResult } from '../../tracking/sync-seams.js';
 
-const VALIDATION_REJECTED: RoutineOpHandlerResult = { outcome: 'rejected', code: 'rejected_validation', retryable: false };
-const CONFLICT_REJECTED: RoutineOpHandlerResult = { outcome: 'rejected', code: 'rejected_conflict', retryable: false };
-const DELETED_REJECTED: RoutineOpHandlerResult = { outcome: 'rejected', code: 'rejected_deleted', retryable: false };
-const APPLIED: RoutineOpHandlerResult = { outcome: 'applied' };
+const VALIDATION_REJECTED: SyncOpHandlerResult = { outcome: 'rejected', code: 'rejected_validation', retryable: false };
+const CONFLICT_REJECTED: SyncOpHandlerResult = { outcome: 'rejected', code: 'rejected_conflict', retryable: false };
+const DELETED_REJECTED: SyncOpHandlerResult = { outcome: 'rejected', code: 'rejected_deleted', retryable: false };
+const APPLIED: SyncOpHandlerResult = { outcome: 'applied' };
 
 @Injectable()
-export class RoutineOpHandler implements RoutineOpHandlerSeam {
+export class RoutineOpHandler implements SyncOpHandler {
   readonly kind = 'journal_routine' as const;
 
-  async apply(op: RoutineOpEnvelope, ctx: RoutineOpContext, tx: Prisma.TransactionClient): Promise<RoutineOpHandlerResult> {
+  constructor(
+    // The journal-internal catalog seam (§4 — the same port the session
+    // handler consumes): apply-time name-snapshot resolution, total-or-nothing.
+    @Inject(EXERCISE_CATALOG_RESOLUTION_PORT)
+    private readonly catalogNames: ExerciseCatalogResolutionPort,
+  ) {}
+
+  async apply(op: SyncOpEnvelope, ctx: SyncOpContext, tx: Prisma.TransactionClient): Promise<SyncOpHandlerResult> {
     if (op.kind !== this.kind) {
       return VALIDATION_REJECTED;
     }
@@ -98,9 +106,14 @@ export class RoutineOpHandler implements RoutineOpHandlerSeam {
     const { snapshot, clientUpdatedAt } = parsed;
     // Referential validation precedes any state read (contract §1.3:
     // validation failures precede the state machine) — every exerciseId
-    // must reference an existing catalog row, and the SAME read freezes the
-    // server-derived name snapshots (§1.1).
-    const names = await this.freezeNameSnapshots(tx, snapshot);
+    // must reference an existing catalog row, and the SAME resolution
+    // freezes the server-derived name snapshots (§1.1) through the
+    // journal-internal EXERCISE_CATALOG_RESOLUTION_PORT (the session
+    // handler's seam — catalogNameSnapshots-backed, total-or-nothing).
+    const names = await this.catalogNames.resolveCatalogNames(
+      tx,
+      snapshot.exercises.map((entry) => entry.exerciseId),
+    );
     if (names === null) {
       return VALIDATION_REJECTED; // unknown/nonexistent exerciseId
     }
@@ -113,34 +126,13 @@ export class RoutineOpHandler implements RoutineOpHandlerSeam {
     return this.applyUpdate(op, ctx, snapshot, clientUpdatedAt, names, existing, tx);
   }
 
-  /**
-   * Resolves every referenced catalog row and returns the snapshot map
-   * (exerciseId → frozen names). Null when ANY id is unknown — the whole op
-   * rejects (partial templates never apply). Each apply freezes the rows'
-   * CURRENT names (an edit re-freezes at that apply).
-   */
-  private async freezeNameSnapshots(
-    tx: Prisma.TransactionClient,
-    snapshot: RoutineSnapshot,
-  ): Promise<Map<string, { nameEn: string; nameAr: string }> | null> {
-    const ids = [...new Set(snapshot.exercises.map((entry) => entry.exerciseId))];
-    const rows = await tx.exercise.findMany({
-      where: { id: { in: ids } },
-      select: { id: true, nameEn: true, nameAr: true },
-    });
-    if (rows.length !== ids.length) {
-      return null;
-    }
-    return new Map(rows.map((row) => [row.id, { nameEn: row.nameEn, nameAr: row.nameAr }]));
-  }
-
   /** Inserts the full child tree for a fresh (or LWW-winning) snapshot. */
   private async insertChildTree(
     tx: Prisma.TransactionClient,
-    ctx: RoutineOpContext,
+    ctx: SyncOpContext,
     routineId: string,
     snapshot: RoutineSnapshot,
-    names: Map<string, { nameEn: string; nameAr: string }>,
+    names: Map<string, { nameEn: string; nameAr: string | null }>,
   ): Promise<void> {
     for (const entry of snapshot.exercises) {
       const frozen = names.get(entry.exerciseId);
@@ -185,7 +177,7 @@ export class RoutineOpHandler implements RoutineOpHandlerSeam {
    */
   private async softDeleteChildTree(
     tx: Prisma.TransactionClient,
-    ctx: RoutineOpContext,
+    ctx: SyncOpContext,
     routineId: string,
   ): Promise<void> {
     const entries = await tx.journalRoutineExercise.findMany({
@@ -205,14 +197,14 @@ export class RoutineOpHandler implements RoutineOpHandlerSeam {
   }
 
   private async applyCreate(
-    op: RoutineOpEnvelope,
-    ctx: RoutineOpContext,
+    op: SyncOpEnvelope,
+    ctx: SyncOpContext,
     snapshot: RoutineSnapshot,
     clientUpdatedAt: Date,
-    names: Map<string, { nameEn: string; nameAr: string }>,
+    names: Map<string, { nameEn: string; nameAr: string | null }>,
     existing: { deletedAt: Date | null } | null,
     tx: Prisma.TransactionClient,
-  ): Promise<RoutineOpHandlerResult> {
+  ): Promise<SyncOpHandlerResult> {
     if (existing !== null) {
       // Entity-id misuse: create on a live entity is a conflict; create on a
       // tombstone is the no-resurrection block (I9). Both terminal.
@@ -233,14 +225,14 @@ export class RoutineOpHandler implements RoutineOpHandlerSeam {
   }
 
   private async applyUpdate(
-    op: RoutineOpEnvelope,
-    ctx: RoutineOpContext,
+    op: SyncOpEnvelope,
+    ctx: SyncOpContext,
     snapshot: RoutineSnapshot,
     clientUpdatedAt: Date,
-    names: Map<string, { nameEn: string; nameAr: string }>,
+    names: Map<string, { nameEn: string; nameAr: string | null }>,
     existing: { id: string; deletedAt: Date | null; updatedAt: Date; lastOpId: string | null } | null,
     tx: Prisma.TransactionClient,
-  ): Promise<RoutineOpHandlerResult> {
+  ): Promise<SyncOpHandlerResult> {
     if (existing === null) {
       // Client belief vs server truth — the client must re-pull (§1.3).
       return CONFLICT_REJECTED;
@@ -272,10 +264,10 @@ export class RoutineOpHandler implements RoutineOpHandlerSeam {
   }
 
   private async applyDelete(
-    op: RoutineOpEnvelope,
-    ctx: RoutineOpContext,
+    op: SyncOpEnvelope,
+    ctx: SyncOpContext,
     tx: Prisma.TransactionClient,
-  ): Promise<RoutineOpHandlerResult> {
+  ): Promise<SyncOpHandlerResult> {
     // Envelope parity (defensive — sync batch-validates this first, §1.2):
     // deletes carry no payload; routine ops carry NO localDate (a template
     // has no day — the parity CHECK agrees).
@@ -316,7 +308,7 @@ export class RoutineOpHandler implements RoutineOpHandlerSeam {
    * mismatched transaction context is a seam violation — refuse the whole
    * apply (throw) rather than silently applying under the wrong identity.
    */
-  private async assertTransactionPosture(tx: Prisma.TransactionClient, ctx: RoutineOpContext): Promise<void> {
+  private async assertTransactionPosture(tx: Prisma.TransactionClient, ctx: SyncOpContext): Promise<void> {
     const probe = await tx.$queryRaw<{ currentRole: string; gucUser: string | null }[]>`
       SELECT current_user AS "currentRole", current_setting('app.user_id', true) AS "gucUser"`;
     const row = probe[0];

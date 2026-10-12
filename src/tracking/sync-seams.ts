@@ -39,7 +39,7 @@ export type RejectionCode =
  * `journal_routine` joins with w04-s2c's registration union. The per-op
  * semantics (§1.3 state machine, LWW, tombstones) are inherited verbatim.
  */
-export type SyncOpKind = 'diary_entry' | 'user_food' | 'favorite' | 'journal_session';
+export type SyncOpKind = 'diary_entry' | 'user_food' | 'favorite' | 'journal_session' | 'journal_routine';
 
 export type SyncOpAction = 'create' | 'update' | 'delete';
 
