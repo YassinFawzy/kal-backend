@@ -273,7 +273,11 @@ describe('journal_session over the real HTTP boundary (§1)', () => {
     const upsert = created.find((c) => c.entityId === sessionId2);
     expect(upsert?.kind).toBe('journal_session');
     expect(upsert?.change).toBe('upsert');
-    expect(upsert?.payload?.exercises).toHaveLength(1);
+    // Ruling 4: the feed upsert is the §2 projection — frozen snapshots ride it.
+    const feedPayload = upsert?.payload as { id: string; exercises: { nameSnapshotEn: string }[] };
+    expect(feedPayload?.id).toBe(sessionId2);
+    expect(feedPayload?.exercises).toHaveLength(1);
+    expect(feedPayload?.exercises[0]?.nameSnapshotEn).toBe('Barbell back squat');
     // Training-day flags never ride the feed (§1.2 — sync kinds only).
     expect(created.every((c) => ['diary_entry', 'user_food', 'favorite', 'journal_session'].includes(c.kind))).toBe(true);
 

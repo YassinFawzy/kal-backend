@@ -19,11 +19,17 @@
  * starts from its beginning (bootstrap and gap-fill are the same mechanism
  * as an incremental pull).
  *
- * Upsert payloads are FULL entity snapshots in the OP payload shape (the
- * w3 §1.6 rule — "the same frozen snapshot shape as the op payload" —
- * inherited verbatim); name snapshots are server-derived state the §2 read
- * projections serve. Training-day marks NEVER appear in this feed (§1.2 —
- * a projection must not become a sync entity).
+ * Upsert payloads are the §2 stored-entity PROJECTION — id, localDate,
+ * title?, updatedAt, and the ordered non-deleted exercise entries WITH the
+ * frozen-at-log-time name snapshots and set rows. SUPERVISOR RULING 4
+ * (w04, 2026-10-12) fixes this shape: offline display of PULLED sessions
+ * must resolve names from the FROZEN snapshots, never the live catalog (a
+ * catalog rename must never rewrite how old sessions display offline — the
+ * exact I11-analog bug the snapshots exist to prevent); the client's only
+ * offline carriers of snapshots are the feed (sync) and §2 reads (online),
+ * so they carry the SAME projection, and s3a's client bridge (Ruling 2)
+ * stores exactly these fields from it. Training-day marks NEVER appear in
+ * this feed (§1.2 — a projection must not become a sync entity).
  *
  * Session payloads are health data: every query binds the validated
  * context's `userId` explicitly (I1) inside the caller's RLS-postured
@@ -33,7 +39,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '../../../generated/prisma/client.ts';
 import type { JournalTx } from '../journal-tx.js';
-import { aggregateToSnapshot, type StoredSessionAggregate } from './session-snapshot.js';
+import { aggregateToSessionView } from './session-snapshot.js';
 import { SessionRepository } from './session-repository.js';
 import type { DeltaChange, DeltaCursorState, SyncOpContext, SyncOpKind, TrackingDeltaProvider } from '../../tracking/sync-seams.js';
 
@@ -95,7 +101,7 @@ export class SessionDeltaProvider implements TrackingDeltaProvider {
         });
         continue;
       }
-      const aggregate: StoredSessionAggregate | null = await this.repository.findSessionAggregate(tx, ctx.userId, row.id);
+      const aggregate = await this.repository.findSessionAggregate(tx, ctx.userId, row.id);
       if (aggregate === null) {
         continue; // unobservable: the row was visible above in THIS transaction
       }
@@ -104,7 +110,7 @@ export class SessionDeltaProvider implements TrackingDeltaProvider {
         entityId: row.id,
         change: 'upsert',
         updatedAt: msIso(row.updatedAt),
-        payload: aggregateToSnapshot(aggregate),
+        payload: aggregateToSessionView(aggregate), // the §2 projection — Ruling 4
       });
     }
     return { changes, exhausted: page.length < take };

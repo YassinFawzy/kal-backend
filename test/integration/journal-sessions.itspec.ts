@@ -14,8 +14,9 @@
  * Required cases (task contract — assertions by name):
  *   - happy path: a mixed-format session (weighted + timed + free-text WOD
  *     notes) applies through the real ingestion path; name snapshots freeze
- *     from the catalog at apply; the delta feed carries the op-shaped
- *     snapshot; the read endpoints project the stored aggregate.
+ *     from the catalog at apply; the delta feed upserts the §2 PROJECTION
+ *     (Ruling 4 — frozen name snapshots ride the feed); the read endpoints
+ *     project the same aggregate.
  *   - validation/boundary: an invalid op in a batch ⇒ per-op
  *     `rejected_validation`, the batch continues, other ops apply; unknown
  *     exercise reference ⇒ rejected_validation; day-boundary carry — a
@@ -260,18 +261,27 @@ describe('happy path — mixed formats through the REAL ingestion path (§1)', (
     expect(wod?.sets[0]?.notesText).toBe('WOD 21-15-9 — cash-out unbroken');
   });
 
-  it('the delta feed carries the op-shaped full snapshot; the day read projects entries + frozen names + sets', async () => {
+  it('the delta feed upsert carries the §2 PROJECTION (Ruling 4): frozen name snapshots ride the feed; the day read projects the same aggregate', async () => {
     const page = await inUserScopeTx(prisma, CTX_A, (tx) => delta.changesSince(null, 10, CTX_A, tx));
     const upsert = page.changes.find((c) => c.entityId === entityId(1));
     expect(upsert?.change).toBe('upsert');
     expect(upsert?.kind).toBe('journal_session');
-    const payload = upsert?.payload as { localDate: string; title?: string; exercises: { exerciseId: string; position: number; sets: unknown[] }[] };
+    const payload = upsert?.payload as {
+      id: string; localDate: string; title?: string; updatedAt: string;
+      exercises: { id: string; exerciseId: string; position: number; nameSnapshotEn: string; nameSnapshotAr: string | null; sets: { id: string; position: number; format: string }[] }[];
+    };
+    expect(payload.id).toBe(entityId(1));
     expect(payload.localDate).toBe('2026-10-12');
     expect(payload.title).toBe('Push day');
+    expect(typeof payload.updatedAt).toBe('string');
     expect(payload.exercises.map((e) => e.exerciseId)).toEqual([EX_SQUAT, EX_PLANK, EX_BURPEE]);
+    // The frozen snapshots RIDE THE FEED (Ruling 4): a pulled session
+    // displays from them offline — never from the live catalog.
+    expect(payload.exercises[0]?.nameSnapshotEn).toBe(SQUAT_NAME_EN);
+    expect(payload.exercises[0]?.nameSnapshotAr).toBe(SQUAT_NAME_AR);
     expect(payload.exercises[0]?.sets).toHaveLength(3);
+    expect(payload.exercises[0]?.sets[0]?.format).toBe('weighted');
     // Training-day marks NEVER appear in the feed (§1.2).
-    expect(page.changes.some((c) => c.entityId.includes('training') === true && c.kind !== 'journal_session')).toBe(false);
     expect(page.changes.every((c) => c.kind === 'journal_session')).toBe(true);
 
     const day = await reads.readDay(USER_A, '2026-10-12');

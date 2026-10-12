@@ -251,8 +251,10 @@ export function parseSessionSnapshot(op: {
 }
 
 // ---------------------------------------------------------------------------
-// Delta payload + REST projections (§1.4 upserts carry the op snapshot
-// shape; §2 reads project the stored aggregate)
+// Delta payload + REST projections — ONE projection for both (Ruling 4,
+// w04 supervisor, 2026-10-12): the feed's `upsert` payloads ARE the §2
+// stored-entity projection, frozen name snapshots included (see the doc on
+// `aggregateToSessionView` and session-delta.service.ts)
 // ---------------------------------------------------------------------------
 
 /** One hydrated exercise entry with its set rows (the stored aggregate). */
@@ -267,41 +269,9 @@ export interface StoredSessionAggregate {
   readonly exercises: readonly StoredExerciseAggregate[];
 }
 
-/**
- * The delta feed's `upsert` payload: the FULL entity snapshot of a stored
- * aggregate — the same frozen shape as the op payload (§1.4; the w3 §1.6
- * rule). Name snapshots are NOT part of it: they are server-derived state
- * the client reads through the §2 projections and its exercise cache.
- */
-export function aggregateToSnapshot(aggregate: StoredSessionAggregate): SessionSnapshot {
-  return {
-    localDate: formatStoredDate(aggregate.session.localDate),
-    ...(aggregate.session.title === null ? {} : { title: aggregate.session.title }),
-    exercises: aggregate.exercises.map((entry) => ({
-      exerciseId: entry.exercise.exerciseId,
-      position: entry.exercise.position,
-      sets: entry.sets.map(setRowToPayloadSet),
-    })),
-  };
-}
-
-function setRowToPayloadSet(row: JournalExerciseSet): SessionSet {
-  if (row.format === 'weighted') {
-    return { format: 'weighted', weightKg: Number(row.weightKg), reps: row.reps ?? 0 };
-  }
-  if (row.format === 'timed') {
-    return { format: 'timed', durationSeconds: row.durationSeconds ?? 0 };
-  }
-  return { format: 'notes', text: row.notesText ?? '' };
-}
-
 function formatStoredDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
-
-// ---------------------------------------------------------------------------
-// §2 read projections
-// ---------------------------------------------------------------------------
 
 /** One ordered set as projected by the §2 read surface (the format's fields only). */
 export interface SessionSetView {
@@ -333,6 +303,19 @@ export interface SessionView {
   readonly exercises: readonly SessionExerciseView[];
 }
 
+/**
+ * The delta feed's `upsert` payload AND the §2 read body: the FULL stored
+ * aggregate projection — id, localDate, title?, updatedAt, and the ordered
+ * non-deleted exercise entries WITH their frozen-at-log-time name snapshots
+ * and set rows. Ruling 4 (w04 supervisor, 2026-10-12) fixes this shape for
+ * the feed: offline display of PULLED sessions must resolve names from the
+ * FROZEN snapshots, never the live catalog (a catalog rename must never
+ * rewrite how old sessions display offline — the exact I11-analog bug the
+ * snapshots exist to prevent); the client's only offline carriers of
+ * snapshots are the feed (sync) and §2 reads (online), so they carry the
+ * same projection, and s3a's client bridge (Ruling 2) stores exactly these
+ * fields from it.
+ */
 export function aggregateToSessionView(aggregate: StoredSessionAggregate): SessionView {
   return {
     id: aggregate.session.id,
