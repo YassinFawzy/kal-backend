@@ -29,8 +29,8 @@ export type {
   TrackingDeltaProvider,
 } from '../../tracking/sync-seams.js';
 
-/** The entity-kind registry — frozen, exhaustive for W3 (note §1.1). */
-export const SYNC_ENTITY_KINDS = ['diary_entry', 'user_food', 'favorite'] as const;
+/** The entity-kind registry — the w3 freeze additively extended by the w4 contract (docs/api/wave-04-contract.md §1; supervisor-blessed seam widening, ruling 1; `journal_routine` joins with s2c's union). */
+export const SYNC_ENTITY_KINDS = ['diary_entry', 'user_food', 'favorite', 'journal_session'] as const;
 
 /**
  * The decoded cursor's position in the global feed order. `updatedAt` is

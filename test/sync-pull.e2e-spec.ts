@@ -196,10 +196,13 @@ describe('sync.changes.pull — authentication', () => {
 });
 
 describe('sync.changes.pull — production registration', () => {
-  it('the three REAL delta providers register at module init (canonical seam; duplicate-guarded)', () => {
+  it('the REAL delta providers register at module init (canonical seam; duplicate-guarded)', () => {
     // SyncModule.onModuleInit registered s2c's diary + s2a's foods providers
     // through the sync-owned registry — the production registration path.
-    expect([...app.get(SyncDeltaRegistry).registeredKinds()].sort()).toEqual(['diary_entry', 'favorite', 'user_food']);
+    // W4 (additive, supervisor ruling 1): the journal module's
+    // `journal_session` provider joins the same registry; `journal_routine`
+    // joins with s2c's rebase union.
+    expect([...app.get(SyncDeltaRegistry).registeredKinds()].sort()).toEqual(['diary_entry', 'favorite', 'journal_session', 'user_food']);
   });
 });
 
