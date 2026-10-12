@@ -5,6 +5,7 @@ import { ContractsModule } from './contracts/contracts.module.js';
 import { DbModule } from './db/db.module.js';
 import { HealthModule } from './health/health.module.js';
 import { IdentityModule } from './identity/identity.module.js';
+import { JournalModule } from './journal/journal.module.js';
 import { ProblemsModule } from './problems/problems.module.js';
 import { RequestContextMiddleware, RequestLoggingMiddleware } from './request-context/index.js';
 import { SchedulerModule } from './scheduler/scheduler.module.js';
@@ -33,6 +34,11 @@ import { SyncModule } from './sync/sync.module.js';
     // s2a foods + s2c diary): the tracking surfaces + the frozen
     // sync↔tracking seam implementations.
     TrackingModule,
+    // w04-s2b (additive — SUPERVISOR-ROUTED BLESSED BLOCK, lane s2b's only
+    // shared-surface line): the journal module's exercise-catalog surface.
+    // Lanes s2a/s2c union their journal wiring into JournalModule itself on
+    // rebase (this import line does not move).
+    JournalModule,
     // w03-s2d (additive): the sync ingestion write path (POST /sync/ops).
     SyncModule,
   ],
