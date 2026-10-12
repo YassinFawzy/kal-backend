@@ -451,10 +451,20 @@ describe('grants matrix (least privilege, behaviorally pinned)', () => {
       `SELECT tablename, policyname FROM pg_policies WHERE schemaname = 'public' AND tablename <> 'weight_log'
         ORDER BY tablename, policyname`,
     );
+    // The W3 adopted set, plus the W4 journal adopted set (the w4 schema
+    // lane extends this exact pin additively — policies are named by their
+    // owning migration, never implied).
     expect(policies.rows).toEqual([
       { tablename: 'diary_days', policyname: 'diary_days_user_context' },
       { tablename: 'diary_entries', policyname: 'diary_entries_user_context' },
       { tablename: 'favorites', policyname: 'favorites_user_context' },
+      { tablename: 'journal_exercise_sets', policyname: 'journal_exercise_sets_user_context' },
+      { tablename: 'journal_routine_exercises', policyname: 'journal_routine_exercises_user_context' },
+      { tablename: 'journal_routine_sets', policyname: 'journal_routine_sets_user_context' },
+      { tablename: 'journal_routines', policyname: 'journal_routines_user_context' },
+      { tablename: 'journal_session_exercises', policyname: 'journal_session_exercises_user_context' },
+      { tablename: 'journal_sessions', policyname: 'journal_sessions_user_context' },
+      { tablename: 'journal_training_days', policyname: 'journal_training_days_user_context' },
       { tablename: 'sync_operations', policyname: 'sync_operations_user_context' },
       { tablename: 'user_food_servings', policyname: 'user_food_servings_user_context' },
       { tablename: 'user_foods', policyname: 'user_foods_user_context' },
@@ -463,7 +473,7 @@ describe('grants matrix (least privilege, behaviorally pinned)', () => {
       db,
       `SELECT relname, relrowsecurity FROM pg_class
         WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'
-          AND relname IN ('foods', 'serving_variants', 'barcode_product_cache', 'sync_idempotency_keys', 'user_food_create_counters', 'recovery_request_counters')
+          AND relname IN ('foods', 'serving_variants', 'barcode_product_cache', 'sync_idempotency_keys', 'user_food_create_counters', 'recovery_request_counters', 'exercises', 'journal_session_create_counters')
         ORDER BY relname`,
     );
     expect(declined.rows.every((row) => row.relrowsecurity === false)).toBe(true);

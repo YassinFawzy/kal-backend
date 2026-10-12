@@ -18,6 +18,7 @@
  */
 import type { PrismaClient } from '../generated/prisma/client.ts';
 import { SEED_FOODS } from './seed-manifest.ts';
+import { SEED_EXERCISES } from './seed-exercises.ts';
 
 export interface FoodCatalogSeedResult {
   readonly foods: number;
@@ -91,4 +92,52 @@ export async function applyFoodCatalogSeed(prisma: PrismaClient): Promise<FoodCa
     prisma.servingVariant.count(),
   ]);
   return { foods, servingVariants };
+}
+
+export interface ExerciseCatalogSeedResult {
+  readonly exercises: number;
+}
+
+/**
+ * Applies the exercise-catalog seed (wave-04 contract note §8 — upsert per
+ * manifest row). Idempotent: replaying against a seeded database changes no
+ * values (upsert-by-fixed-id). The catalog is RLS-declined platform data —
+ * the seed's admin connection writes it without any GUC setup (the
+ * documented posture). Content is ENGINEERING-INITIAL pending founder
+ * review (ledger §7-C).
+ */
+export async function applyExerciseCatalogSeed(prisma: PrismaClient): Promise<ExerciseCatalogSeedResult> {
+  for (const exercise of SEED_EXERCISES) {
+    await prisma.exercise.upsert({
+      where: { id: exercise.id },
+      update: {
+        provenance: exercise.provenance,
+        nameEn: exercise.nameEn,
+        nameEnNormalized: exercise.nameEnNormalized,
+        nameAr: exercise.nameAr,
+        nameArNormalized: exercise.nameArNormalized,
+        aliases: [...exercise.aliases],
+        aliasesNormalized: [...exercise.aliasesNormalized],
+        instructionsEn: exercise.instructionsEn,
+        instructionsAr: exercise.instructionsAr,
+        muscleGroups: [...exercise.muscleGroups],
+        tags: [...exercise.tags],
+      },
+      create: {
+        id: exercise.id,
+        provenance: exercise.provenance,
+        nameEn: exercise.nameEn,
+        nameEnNormalized: exercise.nameEnNormalized,
+        nameAr: exercise.nameAr,
+        nameArNormalized: exercise.nameArNormalized,
+        aliases: [...exercise.aliases],
+        aliasesNormalized: [...exercise.aliasesNormalized],
+        instructionsEn: exercise.instructionsEn,
+        instructionsAr: exercise.instructionsAr,
+        muscleGroups: [...exercise.muscleGroups],
+        tags: [...exercise.tags],
+      },
+    });
+  }
+  return { exercises: await prisma.exercise.count() };
 }
