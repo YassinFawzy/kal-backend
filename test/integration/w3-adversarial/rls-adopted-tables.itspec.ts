@@ -36,7 +36,7 @@ import {
   USER_B,
   USER_C,
 } from '../helpers/acting-user.js';
-import { adminQuery, createEphemeralKalDb, type EphemeralKalDb } from '../helpers/ephemeral-db.js';
+import { adminCatalogQuery, adminQuery, createEphemeralKalDb, type EphemeralKalDb } from '../helpers/ephemeral-db.js';
 
 const DAY = '2026-10-08';
 const T0 = '2026-10-08T07:00:00Z';
@@ -131,14 +131,22 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  // The task's zero-leftover gate: before dropping this suite's scratch
-  // database (the last thing any suite does), assert NO kal_it_% scratch
-  // database besides OUR OWN exists in the cluster (suites serialize —
-  // fileParallelism off — so a sibling suite's scratch db cannot be alive).
+  // The task's zero-leftover gate. AMENDED 2026-10-12 (w04 supervisor
+  // amendment 1): drop this suite's scratch database FIRST and
+  // unconditionally — the original assert-before-drop ordering leaked this
+  // suite's own database whenever a concurrently-running vitest process
+  // (wave-04 lanes run parallel suite instances) held a live foreign
+  // `kal_it_*` and tripped the cluster-wide check. The assertion itself is
+  // UNCHANGED and still cluster-global: after our own drop, zero `kal_it_%`
+  // scratch databases may remain (catalog query on the `postgres`
+  // maintenance database — `adminQuery` targets the dropped scratch DB).
   const mine = db.name;
-  const leftovers = await adminQuery(db, `SELECT datname FROM pg_database WHERE datname LIKE 'kal_it_%' AND datname <> $1`, [mine]);
-  expect(leftovers.rows, 'zero leftover kal_it_* databases').toEqual([]);
   await db.drop();
+  const leftovers = await adminCatalogQuery(
+    `SELECT datname FROM pg_database WHERE datname LIKE 'kal_it_%' AND datname <> $1`,
+    [mine],
+  );
+  expect(leftovers.rows, 'zero leftover kal_it_* databases').toEqual([]);
 }, 60_000);
 
 describe('fail-closed proofs on every adopted table (I2/I4 — uniform A/B/C seeding)', () => {

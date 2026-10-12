@@ -201,3 +201,30 @@ export async function adminQuery<R extends QueryResultRow = QueryResultRow>(
 ): Promise<QueryResult<R>> {
   return db.pool.query<R>(text, params);
 }
+
+/**
+ * ADDITIVE (w04 supervisor amendment 1, 2026-10-12): run one catalog query
+ * against the `postgres` maintenance database on a fresh dedicated
+ * connection. Use AFTER `db.drop()` — `adminQuery` targets the (dropped)
+ * scratch database and cannot serve post-drop checks. Motivation: the
+ * cluster-wide leftover canary in `w3-adversarial/rls-adopted-tables.itspec.ts`
+ * asserted BEFORE dropping its own scratch DB, so a concurrent vitest process
+ * holding a live foreign `kal_it_*` tripped the assert AND leaked the suite's
+ * own database (the amplification recorded in the wave-04 ledger at the s2b
+ * and s2a merges). The canary's assertion semantics are unchanged — only the
+ * ordering (drop first, then assert) and this connection helper are new.
+ */
+export async function adminCatalogQuery<R extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params: readonly unknown[] = [],
+): Promise<QueryResult<R>> {
+  const url = resolveDatabaseUrl();
+  const { Client } = await import('pg');
+  const client = new Client({ connectionString: toAdminUrl(url).toString() });
+  try {
+    await client.connect();
+    return await client.query<R>(text, params);
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
