@@ -23,16 +23,21 @@
  * Seam registration (§4 — "sync owns the registries; tracking registers
  * implementations at module init" is realized as: tracking EXPORTS the
  * implementations; THIS module registers them at init). The frozen
- * entity-kind registry is EXHAUSTIVE for W3 (contract §1.1): all three
- * handlers AND all three delta providers register here; a duplicate
- * registration refuses the boot (registry integrity, fail fast) in BOTH
- * registries.
+ * entity-kind registry is the w3 freeze additively extended by w4
+ * (contract §1): the W3 handlers/providers AND the journal module's
+ * `journal_session` entries register here (lane w04-s2a, supervisor-blessed
+ * seam widening, ruling 1); s2c's `journal_routine` entries join in its
+ * post-s2a rebase union. A duplicate registration refuses the boot
+ * (registry integrity, fail fast) in BOTH registries.
  */
 import { Module, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '../config/config.service.js';
 import { AuditModule } from '../audit/audit.module.js';
 import { DbModule } from '../db/db.module.js';
 import { IdentityModule } from '../identity/identity.module.js';
+import { SessionDeltaProvider } from '../journal/sessions/session-delta.service.js';
+import { SessionOpHandler } from '../journal/sessions/session-apply.service.js';
+import { JournalModule } from '../journal/journal.module.js';
 import { DiaryEntryOpHandler } from '../tracking/diary/diary-apply.service.js';
 import { DiaryDeltaProvider } from '../tracking/diary/diary-delta.service.js';
 import { FavoriteOpHandler } from '../tracking/foods/favorite-op.handler.js';
@@ -53,7 +58,7 @@ import { SyncPullController } from './pull/sync-pull.controller.js';
 import { SyncPullService } from './pull/sync-pull.service.js';
 
 @Module({
-  imports: [IdentityModule, DbModule, TrackingModule, AuditModule],
+  imports: [IdentityModule, DbModule, TrackingModule, JournalModule, AuditModule],
   controllers: [SyncIngestionController, SyncPullController],
   providers: [
     {
@@ -99,20 +104,26 @@ export class SyncModule implements OnModuleInit {
     private readonly userFoodHandler: UserFoodOpHandler,
     private readonly favoriteHandler: FavoriteOpHandler,
     private readonly diaryHandler: DiaryEntryOpHandler,
+    // The w4 journal seam implementations, exported by the journal module
+    // (lane w04-s2a) — registered beside the W3 entries (§4).
+    private readonly sessionHandler: SessionOpHandler,
     private readonly diaryDeltaProvider: DiaryDeltaProvider,
     private readonly userFoodDeltaProvider: UserFoodDeltaProvider,
     private readonly favoriteDeltaProvider: FavoriteDeltaProvider,
+    private readonly sessionDeltaProvider: SessionDeltaProvider,
   ) {}
 
   onModuleInit(): void {
-    // Op handlers (§1.3 state machines live inside tracking).
+    // Op handlers (§1.3 state machines live inside tracking/journal).
     this.registry.registerOpHandler(this.userFoodHandler);
     this.registry.registerOpHandler(this.favoriteHandler);
     this.registry.registerOpHandler(this.diaryHandler);
-    // Delta providers (§1.6 pages live inside tracking; the cross-kind
+    this.registry.registerOpHandler(this.sessionHandler);
+    // Delta providers (§1.6 pages live inside tracking/journal; the cross-kind
     // merge, cursor mint/verify, and endpoint wiring are sync-owned).
     this.deltaRegistry.registerDeltaProvider('diary_entry', this.diaryDeltaProvider);
     this.deltaRegistry.registerDeltaProvider('user_food', this.userFoodDeltaProvider);
     this.deltaRegistry.registerDeltaProvider('favorite', this.favoriteDeltaProvider);
+    this.deltaRegistry.registerDeltaProvider('journal_session', this.sessionDeltaProvider);
   }
 }

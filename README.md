@@ -73,6 +73,12 @@ Schema (migration `20261012000000_w4_journal_core`):
 - **Journal REST mutations do not exist** — sessions/routines flow exclusively through sync ingestion as the `journal_session` and `journal_routine` kinds (the `w4` migration widens the `sync_operations` kind registry additively). REST is reads only: exercise search/detail, session day/detail reads, and the per-exercise PR read (Epley `1RM = weight × (1 + reps/30)` over weighted sets, derived server-side — no PR table).
 - This repository serves the `w4` fixture document additively (`GET /contracts/w4` — every `w1`/`w2`/`w3` entry retained byte-stably; all pinned by golden hashes).
 
+#### W4 sessions domain (lane `w04-s2a`) — landed
+
+- **`src/journal/sessions/**`** — the `journal_session` domain: `session-snapshot.ts` (the §1.1 payload transcription: validation, delta payloads, §2 read projections), `session-apply.service.ts` (the `SyncOpHandler` — the inherited §1.3 state machine, server-derived name snapshots frozen at apply, marks recomputed inside the UoW), `session-delta.service.ts` (the `TrackingDeltaProvider` — current-state keyset paging, tombstones as payload-free deletes), `session-rate-limiter.ts` (ONE limiter, ONE enforcement point — creates only, rolling hour+24 h windows, over-limit ⇒ `rejected_rate_limited` retryable with no ledger row), `training-day-marks.service.ts` (the derived-never-synced projection + the W5-facing `JournalTrainingDayReader`), `session-repository.ts` (the only data access — explicit `user_id` predicates everywhere), `session-read.{controller,service}.ts` (`GET /journal/sessions/days/{localDate}`, `GET /journal/sessions/{sessionId}` — reads only, generic byte-identical 404s).
+- **Registration**: `src/sync/sync.module.ts` registers the journal handler + delta provider at init (journal implements, sync consumes — §4); `journal_routine` joins in s2c's union. `src/journal/journal.module.ts` is the module file s2b/s2c extend.
+- **Tests**: `src/journal/sessions/*.spec.ts` (validator + LWW units), `test/integration/journal-sessions.itspec.ts` (round-trip, day-boundary, replay/tombstone/LWW, rate-guard trip points + no-ledger-row + window-lapse retry, isolation seeds, snapshot freeze, marks idempotency), `test/journal-sessions.e2e-spec.ts` (the assembled HTTP surface incl. byte-identical 404 denial set).
+
 ## Checks
 
 ```bash
