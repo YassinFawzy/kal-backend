@@ -117,9 +117,13 @@ export class SessionDeltaProvider implements TrackingDeltaProvider {
   }
 }
 
-/** Millisecond-precise ISO instant (matches the truncated cursor ordering). */
+/** Millisecond-precise ISO instant (matches the truncated cursor ordering).
+ * w04 SUPERVISOR AMENDMENT 2 (2026-10-13, finding F-s4-1): exact ms — the
+ * whole-second flooring re-qualified sub-second rows against their own
+ * floored cursors (never-draining bounded walks; census-pinned by w04-s4-adv).
+ * Exact-ms serving equals the date_trunc('millisecond', …) keyset. */
 function msIso(instant: Date): string {
-  return new Date(Math.floor(instant.getTime() / 1000) * 1000).toISOString();
+  return instant.toISOString();
 }
 
 function parseCursorInstant(value: string): Date {

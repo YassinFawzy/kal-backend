@@ -96,9 +96,16 @@ export class DiaryDeltaProvider implements TrackingDeltaProvider {
   }
 }
 
-/** Millisecond-precise ISO instant (matches the truncated cursor ordering). */
+/** Millisecond-precise ISO instant (matches the truncated cursor ordering).
+ * w04 SUPERVISOR AMENDMENT 2 (2026-10-13, finding F-s4-1): serves EXACT
+ * milliseconds — the previous whole-second flooring re-qualified every
+ * sub-second row against its own floored cursor ((sec+ms, id) > (sec, id)
+ * is true), so a bounded walk over a same-second stratum never drained
+ * (deterministic census: 3 rows → 50 deliveries, nextCursor never null;
+ * pinned by w04-s4-adv). Exact-ms serving equals the SQL-side
+ * date_trunc('millisecond', …) ordering, so paging drains exactly. */
 function msIso(instant: Date): string {
-  return new Date(Math.floor(instant.getTime() / 1000) * 1000).toISOString();
+  return instant.toISOString();
 }
 
 function parseCursorInstant(value: string): Date {
