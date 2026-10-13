@@ -20,16 +20,17 @@
  *   4. training-day mark stability across replays.
  *   5. sub-ms LWW orientation BOTH ways for session entities (+ opId
  *      tiebreak, the W3 golden pattern extended).
- *   6. F-s2c-1 ADJUDICATION (W3 diary surface — findings-only, no product
- *      edits): engineered same-second sub-second diary rows, limit-1 walk —
- *      proves no loss, convergence-safe, but DUPLICATE re-delivery AND a
- *      NON-TERMINATING walk (cursor regression) on the merged tree.
- *   7. the SAME census for `journal_session` (identical provider shape on
- *      this wave's own surface — findings-only).
+ *   6. F-s2c-1 REGRESSION PIN (W3 diary): engineered same-second sub-second
+ *      diary rows, limit-1 walk — FOUND at 4f6a08e (never-draining walk,
+ *      50 deliveries for 3 rows — census in the s4 MR), FIXED by w04
+ *      supervisor amendment 2 (24cf666): the walk DRAINS exactly-once with
+ *      exact-ms serving, pinned forever.
+ *   7. the SAME pin for `journal_session` (this wave's own provider).
+ *   8. the SAME pin for `user_food` — all three amendment-fixed providers.
  *
- * The F-s2c-1/F-s4 evidence cells pin OBSERVED merged-tree behavior; a
- * supervisor change package that fixes the providers is expected to update
- * these cells in the same package (they are this lane's files).
+ * The census cells pin the FIXED behavior (drain + exactly-once + zero
+ * cursor repeats + full-precision served instants); the found-state census
+ * lives in the s4 MR findings register for the record.
  */
 import type { INestApplication } from '@nestjs/common';
 import type { App } from 'supertest/types.js';
@@ -42,7 +43,7 @@ import { AppModule } from '../../../src/app.module.js';
 import { READINESS_CHECKS } from '../../../src/health/readiness.js';
 import { applyExerciseCatalogSeed, applyFoodCatalogSeed } from '../../../prisma/seed-apply.js';
 import { createEphemeralKalDb, type EphemeralKalDb } from '../../integration/helpers/ephemeral-db.js';
-import { advUuid, quickAddSnapshot } from '../../integration/helpers/three-user-harness.js';
+import { advUuid, quickAddSnapshot, userFoodSnapshot } from '../../integration/helpers/three-user-harness.js';
 import { FaultProxy } from './harness/faults.js';
 import { makeRng } from './harness/support.js';
 
@@ -67,7 +68,7 @@ let dbPool: Pool;
 
 interface JournalOpLike {
   readonly opId: string;
-  readonly kind: 'journal_session' | 'journal_routine' | 'diary_entry';
+  readonly kind: 'journal_session' | 'journal_routine' | 'diary_entry' | 'user_food';
   readonly entityId: string;
   readonly action: 'create' | 'update' | 'delete';
   readonly clientUpdatedAt: string;
@@ -152,14 +153,17 @@ interface WalkCensus {
   readonly counts: Map<string, number>;
   /** nextCursor token → occurrence count (a repeat = the walk regressed). */
   readonly cursorRepeats: Map<string, number>;
+  /** ACTUAL pages pulled (delivering + the empty terminator). */
   readonly pages: number;
   readonly drained: boolean;
 }
 
 /**
  * Walks the feed with the given page size. `pageCap` bounds the walk: the
- * F-s2c-1 census cells EXPECT a non-draining walk and assert on the census,
- * so a capped walk is a measurement, not a failure.
+ * census cells assert on the census either way — post-amendment-2 they pin
+ * DRAINING (exactly-once delivery, zero cursor repeats, full-precision
+ * served instants), so a drained walk ends the loop early and `pages`
+ * reports the actual count.
  */
 async function walk(device: SoakDevice, proxy: FaultProxy | null, limit: string, pageCap: number): Promise<WalkCensus> {
   const changes: PullBody['changes'] = [];
@@ -167,6 +171,7 @@ async function walk(device: SoakDevice, proxy: FaultProxy | null, limit: string,
   const cursorRepeats = new Map<string, number>();
   let cursor: string | null = null;
   let drained = false;
+  let pages = 0;
   for (let page = 0; page < pageCap; page += 1) {
     const query: Record<string, string> = { limit };
     if (cursor !== null) {
@@ -174,6 +179,7 @@ async function walk(device: SoakDevice, proxy: FaultProxy | null, limit: string,
     }
     const result = await device.pull(proxy, query);
     expect(result.status).toBe(200);
+    pages += 1;
     for (const change of result.body.changes) {
       changes.push(change);
       counts.set(change.entityId, (counts.get(change.entityId) ?? 0) + 1);
@@ -185,7 +191,7 @@ async function walk(device: SoakDevice, proxy: FaultProxy | null, limit: string,
     cursor = result.body.nextCursor;
     cursorRepeats.set(cursor, (cursorRepeats.get(cursor) ?? 0) + 1);
   }
-  return { changes, counts, cursorRepeats, pages: pageCap, drained };
+  return { changes, counts, cursorRepeats, pages, drained };
 }
 
 /** Applies delivered changes arrival-order to a merged view (the contract oracle). */
@@ -614,26 +620,30 @@ describe('replay/soak: sub-ms LWW orientation both ways for session entities', (
 });
 
 // ===========================================================================
-// 6. F-s2c-1 ADJUDICATION — the W3 diary delta provider (findings-only)
+// 6. F-s2c-1 REGRESSION PIN — the W3 diary delta provider over a same-second
+//    stratum. FOUND by this lane at 4f6a08e (whole-second msIso serving over
+//    a millisecond keyset: 3 rows → 50 deliveries, never drained — census
+//    pinned in the s4 MR); FIXED by w04 SUPERVISOR AMENDMENT 2 (2026-10-13,
+//    kal-backend 24cf666: providers serve exact ms). These cells pin the
+//    FIXED behavior forever: the walk DRAINS, exactly-once, with the
+//    sub-second instant served at full millisecond precision.
 // ===========================================================================
 
-describe('F-s2c-1 adjudication: W3 diary paging under engineered same-second rows (findings evidence — no product edits)', () => {
+describe('F-s2c-1 regression pin (post-amendment-2): W3 diary paging over a same-second stratum drains exactly', () => {
   // Engineered stratum (all inside one whole second, µs-legal envelope
   // instants; ids are ordered literals so the keyset order is deterministic):
-  //   (ms-trunc .000, id …0001)  served exact
-  //   (ms-trunc .000, id …0003)  served exact
-  //   (ms-trunc .300, id …0002)  SERVED SECOND-TRUNCATED (the msIso defect)
-  // Serving …0002 regresses the cursor to (.000, …0002) — strictly before
-  // (.000, …0003) — so the walk cycles …0003/…0002 and never drains.
+  //   (ms-trunc .000, id …0001)
+  //   (ms-trunc .000, id …0003)
+  //   (ms-trunc .300, id …0002)  ← the row that used to re-qualify forever
   const ID_1 = '6a4c0000-0000-4000-8000-000000000001';
   const ID_2 = '6a4c0000-0000-4000-8000-000000000002';
   const ID_3 = '6a4c0000-0000-4000-8000-000000000003';
   const T_EXACT = '2026-10-08T07:00:00.000000Z';
   const T_SUB = '2026-10-08T07:00:00.300000Z';
 
-  it('census: NO loss, tombstone-safe, convergent — but duplicate re-delivery AND a non-draining walk', async () => {
+  it('census: the walk DRAINS — exactly-once delivery, zero cursor repeats, sub-second instants served at full precision', async () => {
     const proxy: FaultProxy | null = null;
-    const { userId, token } = await provisionUser('fs2c1');
+    const { token } = await provisionUser('fs2c1');
     const device = new SoakDevice(appBaseUrl, token, 'dev-a', 'fs2c1');
     const rows: JournalOpLike[] = [
       diaryCreate('f1', ID_1, T_EXACT),
@@ -644,30 +654,27 @@ describe('F-s2c-1 adjudication: W3 diary paging under engineered same-second row
     expect((pushed.body as { results: { outcome: string }[] }).results.map((result) => result.outcome)).toEqual(['applied', 'applied', 'applied']);
 
     const census = await walk(device, proxy, '1', 50);
-    // (a) NO LOSS — every row's final state was delivered at least once.
-    for (const row of rows) {
-      expect(census.counts.get(row.entityId) ?? 0, `loss check ${row.entityId}`).toBeGreaterThanOrEqual(1);
-    }
-    // (b) DUPLICATE re-delivery + NON-TERMINATING walk (the defect, pinned):
-    //     limit-1 pages never drain; a nextCursor token recurs while the
-    //     walk is un-drained. (If a supervisor fix lands, this cell is
-    //     updated in the same package — it pins observed merged-tree behavior.)
-    expect(census.drained, 'the limit-1 walk must DRAIN on a fixed provider').toBe(false);
-    expect(census.pages).toBe(50);
-    // The cycle is DETERMINISTIC — exact pinned census (the defect measured,
-    // not approximated): pages 1–2 serve …0001 and …0003 once each; from
-    // page 3 the walk cycles …0002 (served at its true .300 position, cursor
-    // regressing to .000) and …0003 (re-served) — 24 pages each over pages
-    // 3–50. 50 deliveries for 3 rows.
+    // (a) The walk DRAINS: 3 delivering pages + the empty terminator.
+    expect(census.drained, 'the limit-1 walk must drain (amendment 2 — exact-ms serving)').toBe(true);
+    expect(census.pages).toBe(4);
+    // (b) EXACTLY-ONCE census — no re-delivery, no self-re-qualification:
+    //     every row delivered exactly once; 3 deliveries for 3 rows.
     expect(census.counts.get(ID_1)).toBe(1);
-    expect(census.counts.get(ID_2)).toBe(24);
-    expect(census.counts.get(ID_3)).toBe(25);
+    expect(census.counts.get(ID_2)).toBe(1);
+    expect(census.counts.get(ID_3)).toBe(1);
     const totalDeliveries = [...census.counts.values()].reduce((sum, count) => sum + count, 0);
-    expect(totalDeliveries, 'duplicate re-delivery demonstrated (3 rows walked 50 times)').toBe(50);
-    const maxCursorRecurrence = Math.max(...census.cursorRepeats.values());
-    expect(maxCursorRecurrence, 'cursor regression: a nextCursor token recurs mid-walk').toBeGreaterThanOrEqual(20);
-    // (c) CONVERGENCE-SAFE — arrival-order application over ALL delivered
-    //     changes equals the true final state (three live rows, exact payloads).
+    expect(totalDeliveries, 'bounded, exactly-once delivery').toBe(3);
+    // (c) ZERO cursor regression: every nextCursor token is distinct — the
+    //     served instant equals the keyset position (exact ms).
+    const maxCursorRecurrence = Math.max(...census.cursorRepeats.values(), 0);
+    expect(maxCursorRecurrence, 'no nextCursor token may recur (no regression)').toBeLessThanOrEqual(1);
+    // (d) The sub-second row is SERVED at full millisecond precision — the
+    //     served instant IS its keyset position (the pin that would catch a
+    //     re-introduced flooring).
+    const subChange = census.changes.find((change) => change.entityId === ID_2);
+    expect(subChange?.updatedAt).toBe('2026-10-08T07:00:00.300Z');
+    // (e) CONVERGENT + faithful: arrival-order application equals the true
+    //     final state, and the payloads round-trip exactly.
     const view = applyToMergedView(census.changes);
     expect(view.get(ID_1)).toBe('live');
     expect(view.get(ID_2)).toBe('live');
@@ -676,40 +683,43 @@ describe('F-s2c-1 adjudication: W3 diary paging under engineered same-second row
     for (const row of rows) {
       expect(deliveredById.get(row.entityId)?.payload).toEqual(row.payload);
     }
-    // (d) No resurrection class: the defect re-delivers, it never flips a
-    //     delete into an upsert (verified with a tombstoned row below).
+
+    // (f) Tombstone honesty is unchanged by the fix: the deleted row
+    //     re-serves exactly once, as its payload-free delete, and the walk
+    //     still drains.
     const delRow: JournalOpLike = { ...diaryCreate('f4', ID_2, T_SUB), opId: advUuid('4a6c', 'f4d'), action: 'delete', clientUpdatedAt: '2026-10-08T07:05:00.000000Z' };
     delete (delRow as { payload?: unknown }).payload;
     const delPush = await device.push(proxy, [delRow], advUuid('4a6c', 'fs2c1-del'));
     expect((delPush.body as { results: { outcome: string }[] }).results.map((result) => result.outcome)).toEqual(['applied']);
     const afterDelete = await walk(device, proxy, '1', 50);
-    const viewsAfter = applyToMergedView(afterDelete.changes);
-    expect(viewsAfter.get(ID_2)).toBe('gone');
+    expect(afterDelete.drained).toBe(true);
+    expect(afterDelete.counts.get(ID_1)).toBe(1);
+    expect(afterDelete.counts.get(ID_2)).toBe(1);
+    expect(afterDelete.counts.get(ID_3)).toBe(1);
+    expect(applyToMergedView(afterDelete.changes).get(ID_2)).toBe('gone');
     for (const change of afterDelete.changes.filter((entry) => entry.entityId === ID_2)) {
       expect(change.change).toBe('delete'); // never an upsert after the tombstone
+      expect(change).not.toHaveProperty('payload');
     }
-
-    // Findings-register line (pinned in the assertions above): diary
-    // limit-1 walk over 3 same-second rows = 50 deliveries, never drains;
-    // no loss; convergent; no resurrection.
-    void userId;
   }, 180_000);
 });
 
 // ===========================================================================
-// 7. The same defect class on this wave's own surface — journal_session
+// 7. The same pin on this wave's own surface — journal_session (found at
+//    4f6a08e with the identical never-draining census; fixed by amendment 2,
+//    24cf666).
 // ===========================================================================
 
-describe('F-s4 census: journal_session paging under engineered same-second rows (findings evidence — no product edits)', () => {
+describe('F-s4 regression pin (post-amendment-2): journal_session paging over a same-second stratum drains exactly', () => {
   const ID_1 = '6a4c0000-0000-4000-8000-000000000011';
   const ID_2 = '6a4c0000-0000-4000-8000-000000000012';
   const ID_3 = '6a4c0000-0000-4000-8000-000000000013';
   const T_EXACT = '2026-10-08T07:00:00.000000Z';
   const T_SUB = '2026-10-08T07:00:00.300000Z';
 
-  it('census: the session provider serves second-truncated instants over a millisecond keyset — same re-delivery, same regression', async () => {
+  it('census: the session walk DRAINS — exactly-once, no repeats, exact-ms serving', async () => {
     const proxy: FaultProxy | null = null;
-    const { userId, token } = await provisionUser('jscensus');
+    const { token } = await provisionUser('jscensus');
     const device = new SoakDevice(appBaseUrl, token, 'dev-a', 'jscensus');
     const rows: JournalOpLike[] = [
       sessionCreate('j1', T_EXACT, 'exact one'),
@@ -722,21 +732,67 @@ describe('F-s4 census: journal_session paging under engineered same-second rows 
     expect((pushed.body as { results: { outcome: string }[] }).results.map((result) => result.outcome)).toEqual(['applied', 'applied', 'applied']);
 
     const census = await walk(device, proxy, '1', 50);
-    for (const row of engineered) {
-      expect(census.counts.get(row.entityId) ?? 0, `loss check ${row.entityId}`).toBeGreaterThanOrEqual(1);
-    }
-    expect(census.drained, 'the limit-1 walk must DRAIN on a fixed provider').toBe(false);
-    // Identical deterministic census on this wave's own provider: …011 ×1,
-    // …012 ×24 (regressed), …013 ×25 — 50 deliveries for 3 rows.
+    expect(census.drained).toBe(true);
+    expect(census.pages).toBe(4);
     expect(census.counts.get(ID_1)).toBe(1);
-    expect(census.counts.get(ID_2)).toBe(24);
-    expect(census.counts.get(ID_3)).toBe(25);
+    expect(census.counts.get(ID_2)).toBe(1);
+    expect(census.counts.get(ID_3)).toBe(1);
     const totalDeliveries = [...census.counts.values()].reduce((sum, count) => sum + count, 0);
-    expect(totalDeliveries, 'duplicate re-delivery demonstrated on journal_session').toBe(50);
+    expect(totalDeliveries, 'bounded, exactly-once delivery on journal_session').toBe(3);
+    expect(Math.max(...census.cursorRepeats.values(), 0)).toBeLessThanOrEqual(1);
+    const subChange = census.changes.find((change) => change.entityId === ID_2);
+    expect(subChange?.updatedAt).toBe('2026-10-08T07:00:00.300Z');
     const view = applyToMergedView(census.changes);
     for (const row of engineered) {
       expect(view.get(row.entityId)).toBe('live');
     }
-    void userId;
+  }, 180_000);
+});
+
+// ===========================================================================
+// 8. The third fixed provider — user_food (same amendment, same pin).
+// ===========================================================================
+
+describe('amendment-2 regression pin (post-fix): user_food paging over a same-second stratum drains exactly', () => {
+  const ID_1 = '6a4c0000-0000-4000-8000-000000000021';
+  const ID_2 = '6a4c0000-0000-4000-8000-000000000022';
+  const ID_3 = '6a4c0000-0000-4000-8000-000000000023';
+  const T_EXACT = '2026-10-08T07:00:00.000000Z';
+  const T_SUB = '2026-10-08T07:00:00.300000Z';
+
+  it('census: the foods walk DRAINS — exactly-once, no repeats, exact-ms serving', async () => {
+    const proxy: FaultProxy | null = null;
+    const { token } = await provisionUser('foodcensus');
+    const device = new SoakDevice(appBaseUrl, token, 'dev-a', 'foodcensus');
+    // user_food is a localDate-FORBIDDEN kind; the payload is the frozen
+    // user-food snapshot.
+    const rows: JournalOpLike[] = [
+      { opId: advUuid('4a6c', 'fc1'), kind: 'user_food', entityId: ID_1, action: 'create', clientUpdatedAt: T_EXACT, payload: userFoodSnapshot('census food one') },
+      { opId: advUuid('4a6c', 'fc2'), kind: 'user_food', entityId: ID_2, action: 'create', clientUpdatedAt: T_SUB, payload: userFoodSnapshot('census food two') },
+      { opId: advUuid('4a6c', 'fc3'), kind: 'user_food', entityId: ID_3, action: 'create', clientUpdatedAt: T_EXACT, payload: userFoodSnapshot('census food three') },
+    ];
+    const pushed = await device.push(proxy, rows, advUuid('4a6c', 'foodcensus-key'));
+    expect((pushed.body as { results: { outcome: string }[] }).results.map((result) => result.outcome)).toEqual(['applied', 'applied', 'applied']);
+
+    const census = await walk(device, proxy, '1', 50);
+    expect(census.drained).toBe(true);
+    // The foods provider uses PROBE-based exhaustion (LIMIT limit+1;
+    // exhausted = rows.length <= limit — foods.repository.ts), so it closes
+    // the feed ON the last delivering page — 3 pages, no empty terminator
+    // (the diary/session providers use the look-back shape and emit one;
+    // both end-of-collection postures are conventions-§2-legal).
+    expect(census.pages).toBe(3);
+    expect(census.counts.get(ID_1)).toBe(1);
+    expect(census.counts.get(ID_2)).toBe(1);
+    expect(census.counts.get(ID_3)).toBe(1);
+    const totalDeliveries = [...census.counts.values()].reduce((sum, count) => sum + count, 0);
+    expect(totalDeliveries, 'bounded, exactly-once delivery on user_food').toBe(3);
+    expect(Math.max(...census.cursorRepeats.values(), 0)).toBeLessThanOrEqual(1);
+    const subChange = census.changes.find((change) => change.entityId === ID_2);
+    expect(subChange?.updatedAt).toBe('2026-10-08T07:00:00.300Z');
+    const view = applyToMergedView(census.changes);
+    for (const row of rows) {
+      expect(view.get(row.entityId)).toBe('live');
+    }
   }, 180_000);
 });
