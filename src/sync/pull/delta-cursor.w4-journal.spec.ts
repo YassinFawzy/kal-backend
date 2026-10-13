@@ -36,7 +36,17 @@ describe('journal_session cursor positions verify (w4 §1.4, ruling 1)', () => {
     expect(isSyncEntityKind('journal_session')).toBe(true);
   });
 
-  it('journal_routine is not yet a kind (s2c union) — a token carrying it fails verification', () => {
-    expect(isSyncEntityKind('journal_routine')).toBe(false);
+  it('journal_routine is a registered sync entity kind (the s2c registration union added it)', () => {
+    expect(isSyncEntityKind('journal_routine')).toBe(true);
+  });
+
+  it('a cursor minted on a journal_routine position verifies to the exact position', () => {
+    const p = {
+      updatedAt: '2026-10-12T21:59:00.000Z',
+      kind: 'journal_routine' as const,
+      entityId: '7e100000-0000-4000-8000-00000000b002',
+    };
+    const cursor = cursors.mint(USER_A, p);
+    expect(cursors.verify(cursor, USER_A)).toEqual(p);
   });
 });

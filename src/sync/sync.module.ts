@@ -37,6 +37,8 @@ import { DbModule } from '../db/db.module.js';
 import { IdentityModule } from '../identity/identity.module.js';
 import { SessionDeltaProvider } from '../journal/sessions/session-delta.service.js';
 import { SessionOpHandler } from '../journal/sessions/session-apply.service.js';
+import { RoutineDeltaProviderService } from '../journal/routines/routine-delta.provider.js';
+import { RoutineOpHandler } from '../journal/routines/routine-apply.handler.js';
 import { JournalModule } from '../journal/journal.module.js';
 import { DiaryEntryOpHandler } from '../tracking/diary/diary-apply.service.js';
 import { DiaryDeltaProvider } from '../tracking/diary/diary-delta.service.js';
@@ -105,12 +107,16 @@ export class SyncModule implements OnModuleInit {
     private readonly favoriteHandler: FavoriteOpHandler,
     private readonly diaryHandler: DiaryEntryOpHandler,
     // The w4 journal seam implementations, exported by the journal module
-    // (lane w04-s2a) — registered beside the W3 entries (§4).
+    // (lane w04-s2a's session kinds; lane w04-s2c's routine kind — the
+    // registration UNION this lane owns per supervisor ruling 1/merge
+    // order s2b → s2a → s2c) — registered beside the W3 entries (§4).
     private readonly sessionHandler: SessionOpHandler,
+    private readonly routineHandler: RoutineOpHandler,
     private readonly diaryDeltaProvider: DiaryDeltaProvider,
     private readonly userFoodDeltaProvider: UserFoodDeltaProvider,
     private readonly favoriteDeltaProvider: FavoriteDeltaProvider,
     private readonly sessionDeltaProvider: SessionDeltaProvider,
+    private readonly routineDeltaProvider: RoutineDeltaProviderService,
   ) {}
 
   onModuleInit(): void {
@@ -119,11 +125,13 @@ export class SyncModule implements OnModuleInit {
     this.registry.registerOpHandler(this.favoriteHandler);
     this.registry.registerOpHandler(this.diaryHandler);
     this.registry.registerOpHandler(this.sessionHandler);
+    this.registry.registerOpHandler(this.routineHandler);
     // Delta providers (§1.6 pages live inside tracking/journal; the cross-kind
     // merge, cursor mint/verify, and endpoint wiring are sync-owned).
     this.deltaRegistry.registerDeltaProvider('diary_entry', this.diaryDeltaProvider);
     this.deltaRegistry.registerDeltaProvider('user_food', this.userFoodDeltaProvider);
     this.deltaRegistry.registerDeltaProvider('favorite', this.favoriteDeltaProvider);
     this.deltaRegistry.registerDeltaProvider('journal_session', this.sessionDeltaProvider);
+    this.deltaRegistry.registerDeltaProvider('journal_routine', this.routineDeltaProvider);
   }
 }

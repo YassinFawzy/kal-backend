@@ -47,10 +47,16 @@ import { SessionReadController } from './sessions/session-read.controller.js';
 import { SessionReadService } from './sessions/session-read.service.js';
 import { SessionRepository } from './sessions/session-repository.js';
 import { JournalTrainingDayReader, TrainingDayMarksService } from './sessions/training-day-marks.service.js';
+import { PrController } from './prs/pr.controller.js';
+import { PrService } from './prs/pr.service.js';
+import { RecentsService } from './recents/recents.service.js';
+import { RoutineDeltaProviderService } from './routines/routine-delta.provider.js';
+import { RoutineOpHandler } from './routines/routine-apply.handler.js';
+import { RoutineReadService } from './routines/routine-read.service.js';
 
 @Module({
   imports: [DbModule, IdentityModule, AuditModule],
-  controllers: [ExerciseCatalogController, SessionReadController],
+  controllers: [ExerciseCatalogController, SessionReadController, PrController],
   providers: [
     {
       provide: JournalConfigService,
@@ -78,6 +84,17 @@ import { JournalTrainingDayReader, TrainingDayMarksService } from './sessions/tr
     SessionDeltaProvider,
     SessionReadService,
     JournalTrainingDayReader,
+    // Lane s2c (the registration union): the journal_routine sync domain,
+    // the derived-never-stored PR read model + the frozen
+    // journal.exercises.pr.get read endpoint, and the recents inputs
+    // service. The routine handler consumes EXERCISE_CATALOG_RESOLUTION_PORT
+    // above for its apply-time name-snapshot freeze (the same module-internal
+    // seam the session handler uses — Ruling 4 posture).
+    RoutineOpHandler,
+    RoutineDeltaProviderService,
+    RoutineReadService,
+    PrService,
+    RecentsService,
   ],
   exports: [
     // The module seam (ARCHITECTURE §9): s2a's session code and any future
@@ -88,13 +105,20 @@ import { JournalTrainingDayReader, TrainingDayMarksService } from './sessions/tr
     // the journal implements, sync consumes).
     SessionOpHandler,
     SessionDeltaProvider,
+    // Lane s2c's frozen seam implementation (the journal_routine kind) —
+    // sync registers it beside s2a's session entries at ITS init (§4).
+    RoutineOpHandler,
+    RoutineDeltaProviderService,
     // The W5-facing training-day surface (w4 note §4 — the ONLY sanctioned
     // goals→journal path; the flag is not enumerable by any HTTP surface).
     JournalTrainingDayReader,
-    // Journal-internal surfaces s2c consumes in its rebase (same module —
-    // PR derivation reads sessions through these, never across tables).
+    // Journal-internal surfaces (same module — PR derivation reads sessions
+    // through the module's own transaction posture, never across tables).
     SessionRepository,
     TrainingDayMarksService,
+    RoutineReadService,
+    PrService,
+    RecentsService,
     // The validated config points (w4 note §6) — the rate limiter reads its
     // bounds through this service, never from the environment ad hoc.
     JournalConfigService,

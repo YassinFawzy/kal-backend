@@ -53,7 +53,7 @@ import type {
   SyncOpKind,
 } from '../../tracking/sync-seams.js';
 
-const ENTITY_KINDS: readonly SyncOpKind[] = ['diary_entry', 'user_food', 'favorite', 'journal_session'];
+const ENTITY_KINDS: readonly SyncOpKind[] = ['diary_entry', 'user_food', 'favorite', 'journal_session', 'journal_routine'];
 const ENTITY_ACTIONS: readonly SyncOpAction[] = ['create', 'update', 'delete'];
 
 /** Kinds whose ops CARRY the client-local date (w3 §1.1 + w4 §1.1; journal_routine joins the absent set with s2c's union). */
